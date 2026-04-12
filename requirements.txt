@@ -1,0 +1,6 @@
+langchain
+langchain-ollama
+langchain-tavily
+langgraph
+pillow
+grandalf # draw graphs
