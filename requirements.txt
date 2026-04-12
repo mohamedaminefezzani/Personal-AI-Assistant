@@ -1,6 +1,7 @@
-langchain
-langchain-ollama
-langchain-tavily
-langgraph
-pillow
-grandalf # draw graphs
+langchain==1.2.15
+langchain-ollama==1.1.0
+langchain-tavily==0.2.17
+langgraph==1.1.6
+pillow==12.2.0
+grandalf==0.8 # draw graphs
+rich==15.0.0 # markdown rendering in terminal
