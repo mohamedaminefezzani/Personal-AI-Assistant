@@ -26,7 +26,6 @@ Currently, only web search is implemented. Chat memory is session-persistent
   
 Now, you can con converse.
 
-**NOTE: Ollama must be running in the background. To do so, either:
+**NOTE: Ollama must be running in the background. To do so, either:**
 - run `ollama serve` in a separate terminal if on Linux.
 - open the app in background on Windows.
-**
