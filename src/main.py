@@ -3,7 +3,9 @@ from llm.tools import *
 from llm.graph import *
 
 from langchain.agents import create_agent
-from pprint import pprint
+
+from rich.console import Console
+from rich.markdown import Markdown
 
 from datetime import datetime
 import asyncio
@@ -41,12 +43,13 @@ async def astream_response(message, config=config):
 
 
 async def main():
+    console = Console()
     while True:
         message = input("\nYour question: ")
         if message.lower() == "q":
             break
 
         async for r in astream_response(message=message):
-            pprint(r)
+            console.print(Markdown(r))
 
 asyncio.run(main())
