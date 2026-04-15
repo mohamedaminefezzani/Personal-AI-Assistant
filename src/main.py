@@ -52,4 +52,5 @@ async def main():
         async for r in astream_response(message=message):
             console.print(Markdown(r))
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

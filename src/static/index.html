@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Personal AI Assistant</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="header">
+        <h1>🤖 Personal AI Assistant</h1>
+    </div>
+    
+    <div class="chat-container">
+        <div class="messages" id="messages">
+            <div class="message assistant">
+                Hello! I'm your personal AI assistant. How can I help you today?
+            </div>
+        </div>
+        
+        <div class="input-area">
+            <img id="imagePreview" class="image-preview" alt="Preview">
+            <div class="input-container">
+                <input type="file" id="imageInput" class="image-input" accept="image/*">
+                <button class="button image" onclick="document.getElementById('imageInput').click()">📎</button>
+                
+                <textarea id="messageInput" placeholder="Type your message..." rows="1"></textarea>
+                
+                <button class="button send" id="sendButton" onclick="sendMessage()">
+                    Send
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ✅ Markdown parser -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
