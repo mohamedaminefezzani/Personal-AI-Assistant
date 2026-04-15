@@ -21,8 +21,8 @@ Currently, only web search is implemented. Chat memory is session-persistent
    - `python -m venv venv`
    - `source venv/bin/activate` (for Linux) or `venv/Scripts/activate` (for Windows)
    - `pip install -qr requirements.txt`
-3. Run *main.py*
-   - `python main.py`
+3. Run *web_app.py*
+   - `python web_app.py`
   
 Now, you can con converse.
 
