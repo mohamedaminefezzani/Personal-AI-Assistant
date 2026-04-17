@@ -8,3 +8,4 @@ rich==15.0.0 # markdown rendering in terminal
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
 python-multipart==0.0.12 # for form data handling
+deepagents==0.5.3
