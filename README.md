@@ -11,7 +11,7 @@ Currently, only web search is implemented. Chat memory is session-persistent
 # Requirements
 
 - Python 3.12 (the project runs on Python 3.12.10)
-- Ollama running and Ministral 3's weights (`ollama pull ministral-3:3b`)
+- Ollama running, Ministral 3 and codellama weights (`ollama pull ministral-3:3b`, `ollama pull codellama:7b`)
 - Tavily API key **set as an environment variable** (for web search calls)
 
 # Getting Started
