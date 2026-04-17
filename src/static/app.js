@@ -44,13 +44,20 @@ async function sendMessage() {
     // User message
     const userMessageDiv = document.createElement('div');
     userMessageDiv.className = 'message user';
-    userMessageDiv.textContent = message || '(Image attached)';
+    
+    if (message) {
+        const textSpan = document.createElement('span');
+        textSpan.textContent = message;
+        userMessageDiv.appendChild(textSpan);
+    }
 
     if (currentImage) {
         const img = document.createElement('img');
         img.src = currentImage;
         userMessageDiv.appendChild(img);
     }
+    
+    if (!message && !currentImage) return;
 
     messagesDiv.appendChild(userMessageDiv);
 

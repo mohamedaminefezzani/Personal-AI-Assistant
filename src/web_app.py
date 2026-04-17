@@ -11,6 +11,7 @@ from llm.tools import search_web_tool
 from llm.graph import build_graph
 
 from langchain.agents import create_agent
+from deepagents import create_deep_agent, CompiledSubAgent
 from datetime import datetime
 
 app = FastAPI()
@@ -19,17 +20,29 @@ STATIC_DIR = Path(__file__).parent / "static"
 # Mount static files (CSS, JS)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Initialize the agent
+# Initialize the agents
 today = datetime.now()
-model = LLM().model
+main_model = LLM().model
+code_model = LLM(llm="codellama:7b").model
 
-agent = create_agent(
-    model=model,
-    tools=[search_web_tool],
-    system_prompt=f"You're a helpful assistant with access to tools. Today is {today}. Do not disclose sensitive information (APIs for example)."
+coder_agent = CompiledSubAgent(
+    name="coder_agent",
+    description="Specialized agent for coding tasks",
+    runnable=code_model
 )
 
-graph = build_graph(agent=agent)
+subagents = [coder_agent]
+
+main_agent = create_deep_agent(
+    model=main_model,
+    tools=[search_web_tool],
+    system_prompt=f"""You're a helpful assistant with access to tools. Today is {today}. Do not disclose sensitive information (APIs for example). 
+    Delegate specific tasks to the corresponding agent.""",
+    subagents=subagents,
+    name="main_agent"
+)
+
+graph = build_graph(main_agent=main_agent)
 
 class ChatRequest(BaseModel):
     message: str
@@ -61,8 +74,9 @@ async def stream_agent_response(message: str, image_data: Optional[str], thread_
     
     try:
         async for chunk in graph.astream(inputs, stream_mode="updates", config=config):
-            if 'agent' in chunk:
-                outputs = chunk['agent']['messages']
+            print(chunk)
+            if 'main_agent' in chunk:
+                outputs = chunk['main_agent']['messages']
                 last_message = outputs[-1]
                 
                 # Yield the content as server-sent events

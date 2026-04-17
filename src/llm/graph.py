@@ -1,12 +1,12 @@
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.checkpoint.memory import InMemorySaver
 
-def build_graph(agent):
+def build_graph(main_agent):
     graph = StateGraph(MessagesState)
     memory = InMemorySaver()
 
-    graph.add_node("agent", agent)
-    graph.add_edge(START, "agent")
-    graph.add_edge("agent", END)
+    graph.add_node("main_agent", main_agent)
+    graph.add_edge(START, "main_agent")
+    graph.add_edge("main_agent", END)
 
     return graph.compile(memory)
