@@ -8,9 +8,31 @@ Still in its early phases, this repo provides the basic foundation of the agent 
 The agent is powered by Mistral's recent LLM, **Ministral 3 3b**. It is capable of processing images, handling different languages, as well as calling tools.
 Currently, only web search is implemented. Chat memory is session-persistent
 
+# Current Project Structure (needs more organizing)
+
+```Root
+|─── requirements.txt
+|─── venv
+|─── src
+     |─── main.py (CLI testing)
+     |─── web_app.py (Web interface)
+     |─── llm
+          |─── .env
+          |─── db.py
+          |─── graph.py
+          |─── init_llm.py
+          |─── tools.py
+          |─── utils.py
+     |─── static
+          |─── app.js
+          |─── index.html
+          |─── style.css
+```
+
 # Requirements
 
 - Python 3.12 (the project runs on Python 3.12.10)
+- Postgres connection string (I'm currently using a Neon Serverless Postgres instance for testing) stored in a `.env` file as `DATABASE_URL=conn_string` (replace `conn_string` with your connection string)
 - Ollama running, Ministral 3 and codellama weights (`ollama pull ministral-3:3b`, `ollama pull codellama:7b`)
 - Tavily API key **set as an environment variable** (for web search calls)
 

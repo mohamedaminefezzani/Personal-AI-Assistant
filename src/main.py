@@ -2,7 +2,7 @@ from llm.init_llm import LLM
 from llm.tools import *
 from llm.graph import *
 
-from langchain.agents import create_agent
+from deepagents import create_deep_agent
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -11,35 +11,53 @@ from datetime import datetime
 import asyncio
 
 
-today = datetime.now()
+# Initialize the agents
+today = datetime.now().strftime("%A, %B %d, %Y")
+main_model = LLM().model # ministral 3 3b
+coder_model = LLM(llm="codellama:7b").model
 
-# Initialize model with tools & build graph
-model = LLM().model
+main_system_prompt = f"""
+You are a helpful assistant. 
+- For general questions, answer directly.
+- For coding tasks, delegate to the coder_agent subagent.
 
-agent = create_agent(
-    model=model,
-    tools=[search_web_tool],
-    system_prompt=f"You're a helpful assistant with access to tools. Today is {today}. Do not disclose sensitive information (APIs for example)."
-)
+Today is {today}
+"""
 
-graph = build_graph(agent=agent)
-#graph.get_graph().draw_ascii()
+coder_system_prompt = f"""
+You are a coder assistant that can write code in most programming languages.
+Make sure the code produces no errors as you do not have access to a sandbox for testing purposes.
+Today is {today}.
+"""
 
-config = {
-    "configurable": {"thread_id": "1"}
+tools = [search_web_tool]
+
+coder_agent = {
+    "name": "coder_agent",
+    "description": "Specialized agent for writing and reviewing code in any programming language.",
+    "system_prompt": coder_system_prompt,
+    "model": coder_model
 }
 
-async def astream_response(message, config=config):
+subagents = [coder_agent]
+
+main_agent = create_deep_agent(
+    model=main_model,
+    system_prompt=main_system_prompt,
+    name="main_agent",
+    tools=tools,
+    subagents=subagents
+)
+
+def astream_response(message: str):
     inputs = {
         "messages": [
             {"role": "user", "content": message}
         ]
     }
 
-    async for chunk in graph.astream(inputs, stream_mode="updates", config=config):
-        outputs = chunk['agent']['messages']
-        last_message = outputs[-1]
-        yield last_message.content
+    result = main_agent.invoke(inputs)
+    return result
 
 
 async def main():
@@ -49,8 +67,7 @@ async def main():
         if message.lower() == "q":
             break
 
-        async for r in astream_response(message=message):
-            console.print(Markdown(r))
+        console.print(Markdown(str(astream_response(message))))
 
 if __name__ == "__main__":
     asyncio.run(main())
