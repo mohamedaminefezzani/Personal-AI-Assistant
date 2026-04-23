@@ -10,7 +10,7 @@ Currently, only web search is implemented. Chat memory is session-persistent
 
 # Current Project Structure (needs more organizing)
 
-Root
+`Root
 |─── requirements.txt
 |─── venv
 |─── src
@@ -27,6 +27,7 @@ Root
           |─── app.js
           |─── index.html
           |─── style.css
+`
 
 # Requirements
 
