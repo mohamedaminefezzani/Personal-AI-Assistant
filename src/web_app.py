@@ -1,55 +1,71 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from contextlib import asynccontextmanager
+
 from typing import Optional
 from pydantic import BaseModel
 from pathlib import Path
 import json
 
 from llm.init_llm import LLM
+from llm.graph import get_checkpointer, build_graph
 from llm.tools import search_web_tool
-from llm.graph import build_graph
+from llm.db import get_pool, close_pool
 
 from langchain.agents import create_agent
-from deepagents import create_deep_agent, CompiledSubAgent
 from datetime import datetime
 
-app = FastAPI()
+import asyncio
+
+asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# Initialize the agents
+today = datetime.now()
+main_model = LLM().model # ministral 3 3b
+coder_model = LLM(llm="codellama:7b").model
+
+main_system_prompt = f"""
+You are a main assistant to help with general tasks. You have various tools at your disposal
+1- Be concise and precise.
+
+Today is {today}
+"""
+
+tools = [search_web_tool]
+
+main_agent = create_agent(
+    model=main_model,
+    system_prompt=main_system_prompt,
+    name="main_agent",
+    tools=tools
+)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    pool = await get_pool()
+    checkpointer = get_checkpointer(pool)
+    await checkpointer.setup()
+    app.state.graph = build_graph(main_agent, checkpointer)
+    yield
+
+    await close_pool()
+
+app = FastAPI(lifespan=lifespan)
 
 STATIC_DIR = Path(__file__).parent / "static"
 # Mount static files (CSS, JS)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Initialize the agents
-today = datetime.now()
-main_model = LLM().model
-code_model = LLM(llm="codellama:7b").model
-
-coder_agent = CompiledSubAgent(
-    name="coder_agent",
-    description="Specialized agent for coding tasks",
-    runnable=code_model
-)
-
-subagents = [coder_agent]
-
-main_agent = create_deep_agent(
-    model=main_model,
-    tools=[search_web_tool],
-    system_prompt=f"""You're a helpful assistant with access to tools. Today is {today}. Do not disclose sensitive information (APIs for example). 
-    Delegate specific tasks to the corresponding agent.""",
-    subagents=subagents,
-    name="main_agent"
-)
-
-graph = build_graph(main_agent=main_agent)
+####################################################################################################
 
 class ChatRequest(BaseModel):
     message: str
     thread_id: str
     image: Optional[str] = None
 
-async def stream_agent_response(message: str, image_data: Optional[str], thread_id: str):
+async def stream_agent_response(request: Request, message: str, image_data: Optional[str], thread_id: str):
+    graph = request.app.state.graph
     """Stream the agent's response token by token"""
     
     # Prepare the message content
@@ -73,14 +89,16 @@ async def stream_agent_response(message: str, image_data: Optional[str], thread_
     }
     
     try:
+        last_message = None
         async for chunk in graph.astream(inputs, stream_mode="updates", config=config):
             print(chunk)
             if 'main_agent' in chunk:
                 outputs = chunk['main_agent']['messages']
                 last_message = outputs[-1]
                 
-                # Yield the content as server-sent events
-                yield f"data: {json.dumps({'content': last_message.content})}\n\n"
+        # Yield the content as server-sent events
+        if last_message:
+           yield f"data: {json.dumps({'content': last_message.content})}\n\n"
         
         # Signal end of stream
         yield f"data: {json.dumps({'done': True})}\n\n"
@@ -93,10 +111,10 @@ async def get_home():
     return FileResponse(str(STATIC_DIR / "index.html"))
 
 @app.post("/chat")
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, req: Request):
     """Handle chat messages and stream responses"""
     return StreamingResponse(
-        stream_agent_response(request.message, request.image, request.thread_id),
+        stream_agent_response(req, request.message, request.image, request.thread_id),
         media_type="text/event-stream"
     )
 
