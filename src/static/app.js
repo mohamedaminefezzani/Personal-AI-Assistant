@@ -1,15 +1,150 @@
-const messagesDiv = document.getElementById('messages');
-const messageInput = document.getElementById('messageInput');
-const sendButton = document.getElementById('sendButton');
-const imageInput = document.getElementById('imageInput');
-const imagePreview = document.getElementById('imagePreview');
-const conversationList = document.getElementById('conversationList');
-const newChatBtn = document.getElementById('newChatBtn');
-const sidebarToggle = document.getElementById('sidebarToggle');
-const sidebar = document.getElementById('sidebar');
+// ─── DOM refs ─────────────────────────────────────────────────────────────────
 
-let currentImage = null;
-let currentThreadId = null; // No longer hardcoded
+const authScreen    = document.getElementById('authScreen');
+const appLayout     = document.getElementById('appLayout');
+const authUsername  = document.getElementById('authUsername');
+const authPassword  = document.getElementById('authPassword');
+const authError     = document.getElementById('authError');
+const authSubmit    = document.getElementById('authSubmit');
+const headerUsername = document.getElementById('headerUsername');
+
+const messagesDiv       = document.getElementById('messages');
+const messageInput      = document.getElementById('messageInput');
+const sendButton        = document.getElementById('sendButton');
+const imageInput        = document.getElementById('imageInput');
+const imagePreview      = document.getElementById('imagePreview');
+const conversationList  = document.getElementById('conversationList');
+const newChatBtn        = document.getElementById('newChatBtn');
+const sidebarToggle     = document.getElementById('sidebarToggle');
+const sidebar           = document.getElementById('sidebar');
+
+let currentImage    = null;
+let currentThreadId = null;
+let currentTab      = 'login';
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
+function switchTab(tab) {
+    currentTab = tab;
+    document.getElementById('loginTab').classList.toggle('active', tab === 'login');
+    document.getElementById('registerTab').classList.toggle('active', tab === 'register');
+    authSubmit.textContent = tab === 'login' ? 'Login' : 'Register';
+    authError.textContent = '';
+}
+
+async function submitAuth() {
+    const username = authUsername.value.trim();
+    const password = authPassword.value;
+    if (!username || !password) {
+        authError.textContent = 'Please fill in all fields.';
+        return;
+    }
+
+    authSubmit.disabled = true;
+    authError.textContent = '';
+
+    try {
+        const res = await fetch(`/auth/${currentTab}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            authError.textContent = data.detail || 'Something went wrong.';
+            return;
+        }
+
+        if (currentTab === 'register') {
+            // Auto-login after register
+            authError.style.color = '#4caf50';
+            authError.textContent = 'Account created! Logging in...';
+            currentTab = 'login';
+            await submitAuth();
+            return;
+        }
+
+        showApp(data.username);
+    } finally {
+        authSubmit.disabled = false;
+    }
+}
+
+async function logout() {
+    await fetch('/auth/logout', { method: 'POST' });
+    showAuth();
+}
+
+function showAuth() {
+    authScreen.style.display = 'flex';
+    appLayout.style.display = 'none';
+    authUsername.value = '';
+    authPassword.value = '';
+    authError.textContent = '';
+    authError.style.color = '';
+    // Reset all chat state so the next user starts clean
+    currentThreadId = null;
+    currentImage = null;
+    conversationList.innerHTML = '';
+    messagesDiv.innerHTML = '<div class="message assistant">Hello! I\'m your personal AI assistant. How can I help you today?</div>';
+    imagePreview.classList.remove('show');
+    imageInput.value = '';
+    messageInput.value = '';
+}
+
+function showApp(username) {
+    authScreen.style.display = 'none';
+    appLayout.style.display = 'flex';
+    headerUsername.textContent = username;
+    loadConversations();
+}
+
+// Try to restore session on load
+async function initSession() {
+    try {
+        const res = await fetch('/auth/me');
+        if (res.ok) {
+            const user = await res.json();
+            showApp(user.username);
+        } else if (res.status === 401) {
+            // Try refresh
+            const refreshRes = await fetch('/auth/refresh', { method: 'POST' });
+            if (refreshRes.ok) {
+                const user = await refreshRes.json();
+                showApp(user.username);
+            } else {
+                showAuth();
+            }
+        }
+    } catch {
+        showAuth();
+    }
+}
+
+// Intercept 401s globally and redirect to login
+async function apiFetch(url, options = {}) {
+    let res = await fetch(url, options);
+    if (res.status === 401) {
+        // Try silent token refresh first
+        const refreshRes = await fetch('/auth/refresh', { method: 'POST' });
+        if (refreshRes.ok) {
+            res = await fetch(url, options); // retry
+        } else {
+            showAuth();
+            throw new Error('Session expired');
+        }
+    }
+    return res;
+}
+
+// Enter key on auth inputs
+authPassword.addEventListener('keydown', e => {
+    if (e.key === 'Enter') submitAuth();
+});
+authUsername.addEventListener('keydown', e => {
+    if (e.key === 'Enter') authPassword.focus();
+});
 
 // ─── Sidebar toggle ───────────────────────────────────────────────────────────
 
@@ -17,10 +152,10 @@ sidebarToggle.addEventListener('click', () => {
     sidebar.classList.toggle('collapsed');
 });
 
-// ─── Conversation management ──────────────────────────────────────────────────
+// ─── Conversations ────────────────────────────────────────────────────────────
 
 async function loadConversations() {
-    const res = await fetch('/conversations');
+    const res = await apiFetch('/conversations');
     const conversations = await res.json();
 
     conversationList.innerHTML = '';
@@ -34,7 +169,6 @@ async function loadConversations() {
         appendConversationItem(conv);
     }
 
-    // Auto-select the most recent conversation on load
     if (!currentThreadId && conversations.length > 0) {
         selectConversation(conversations[0].thread_id, conversations[0].title);
     }
@@ -62,27 +196,21 @@ function appendConversationItem(conv) {
 
     item.appendChild(titleSpan);
     item.appendChild(deleteBtn);
-
-    item.addEventListener('click', () => {
-        selectConversation(conv.thread_id, conv.title);
-    });
-
+    item.addEventListener('click', () => selectConversation(conv.thread_id, conv.title));
     conversationList.appendChild(item);
 }
 
 async function selectConversation(threadId, title) {
     currentThreadId = threadId;
 
-    // Update active state in sidebar
     document.querySelectorAll('.conv-item').forEach(el => {
         el.classList.toggle('active', el.dataset.threadId === threadId);
     });
 
-    // Clear chat and show loading state
     messagesDiv.innerHTML = `<div class="message assistant">Loading...</div>`;
 
     try {
-        const res = await fetch(`/conversations/${threadId}/messages`);
+        const res = await apiFetch(`/conversations/${threadId}/messages`);
         const messages = await res.json();
 
         messagesDiv.innerHTML = '';
@@ -107,45 +235,42 @@ async function selectConversation(threadId, title) {
 
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
     } catch (e) {
-        messagesDiv.innerHTML = `<div class="message assistant">Failed to load messages.</div>`;
+        if (e.message !== 'Session expired') {
+            messagesDiv.innerHTML = `<div class="message assistant">Failed to load messages.</div>`;
+        }
     }
 }
 
 async function createNewConversation() {
     const title = `Chat ${new Date().toLocaleString()}`;
-    const res = await fetch('/conversations', {
+    const res = await apiFetch('/conversations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title })
     });
     const conv = await res.json();
 
+    // Remove "no conversations" placeholder if present
+    const placeholder = conversationList.querySelector('.no-convs');
+    if (placeholder) placeholder.remove();
+
     appendConversationItem(conv);
     selectConversation(conv.thread_id, conv.title);
-
-    // Scroll sidebar to top so new chat is visible
     conversationList.scrollTop = 0;
-
     messageInput.focus();
 }
 
 async function deleteConversation(threadId) {
-    await fetch(`/conversations/${threadId}`, { method: 'DELETE' });
+    await apiFetch(`/conversations/${threadId}`, { method: 'DELETE' });
 
-    // Remove from sidebar
     const item = conversationList.querySelector(`[data-thread-id="${threadId}"]`);
     if (item) item.remove();
 
-    // If deleted conversation was active, clear the chat
     if (currentThreadId === threadId) {
         currentThreadId = null;
         messagesDiv.innerHTML = '<div class="message assistant">Select or create a conversation to get started.</div>';
-
-        // Auto-select next available conversation
         const first = conversationList.querySelector('.conv-item');
-        if (first) {
-            first.click();
-        }
+        if (first) first.click();
     }
 
     if (conversationList.children.length === 0) {
@@ -172,12 +297,6 @@ imageInput.addEventListener('change', function(e) {
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────
 
-function scroll_to_bottom() {
-    setTimeout(() => {
-        window.scrollTo(0, document.body.scrollHeight);
-    }, 100);
-}
-
 messageInput.addEventListener('input', function() {
     this.style.height = 'auto';
     this.style.height = Math.min(this.scrollHeight, 120) + 'px';
@@ -186,7 +305,6 @@ messageInput.addEventListener('input', function() {
 messageInput.addEventListener('keydown', function(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        scroll_to_bottom();
         sendMessage();
     }
 });
@@ -197,15 +315,11 @@ async function sendMessage() {
     const message = messageInput.value.trim();
     if (!message && !currentImage) return;
 
-    // If no conversation is selected, create one automatically
-    if (!currentThreadId) {
-        await createNewConversation();
-    }
+    if (!currentThreadId) await createNewConversation();
 
     sendButton.disabled = true;
     messageInput.disabled = true;
 
-    // User message
     const userMessageDiv = document.createElement('div');
     userMessageDiv.className = 'message user';
 
@@ -214,7 +328,6 @@ async function sendMessage() {
         textSpan.textContent = message;
         userMessageDiv.appendChild(textSpan);
     }
-
     if (currentImage) {
         const img = document.createElement('img');
         img.src = currentImage;
@@ -223,28 +336,20 @@ async function sendMessage() {
 
     messagesDiv.appendChild(userMessageDiv);
 
-    // Typing indicator
     const typingDiv = document.createElement('div');
     typingDiv.className = 'typing-indicator show';
     typingDiv.innerHTML = '<span>.</span><span>.</span><span>.</span>';
     messagesDiv.appendChild(typingDiv);
-
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
     messageInput.value = '';
     messageInput.style.height = 'auto';
 
-    const payload = {
-        message: message,
-        thread_id: currentThreadId,  // ✅ dynamic thread_id
-        image: currentImage
-    };
-
     try {
-        const response = await fetch('/chat', {
+        const response = await apiFetch('/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({ message, thread_id: currentThreadId, image: currentImage })
         });
 
         typingDiv.remove();
@@ -255,7 +360,6 @@ async function sendMessage() {
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-
         let fullText = '';
 
         while (true) {
@@ -263,12 +367,9 @@ async function sendMessage() {
             if (done) break;
 
             const chunk = decoder.decode(value);
-            const lines = chunk.split('\n');
-
-            for (const line of lines) {
+            for (const line of chunk.split('\n')) {
                 if (line.startsWith('data: ')) {
                     const data = JSON.parse(line.slice(6));
-
                     if (data.error) {
                         assistantMessageDiv.textContent = 'Error: ' + data.error;
                     } else if (data.content) {
@@ -279,26 +380,25 @@ async function sendMessage() {
                 }
             }
         }
-
     } catch (error) {
         typingDiv.remove();
-        const errorDiv = document.createElement('div');
-        errorDiv.className = 'message assistant';
-        errorDiv.textContent = 'Error: ' + error.message;
-        messagesDiv.appendChild(errorDiv);
+        if (error.message !== 'Session expired') {
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'message assistant';
+            errorDiv.textContent = 'Error: ' + error.message;
+            messagesDiv.appendChild(errorDiv);
+        }
     }
 
     currentImage = null;
     imagePreview.classList.remove('show');
     imageInput.value = '';
-
     sendButton.disabled = false;
     messageInput.disabled = false;
     messageInput.focus();
-
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
-loadConversations();
+initSession();

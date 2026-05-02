@@ -7,23 +7,44 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div class="app-layout">
-        <!-- Sidebar -->
+
+    <!-- ─── Auth screen ─────────────────────────────────────────────────────── -->
+    <div class="auth-screen" id="authScreen">
+        <div class="auth-box">
+            <h1>🤖 Personal AI Assistant</h1>
+            <p class="auth-subtitle">Sign in to continue</p>
+
+            <div class="auth-tabs">
+                <button class="auth-tab active" id="loginTab" onclick="switchTab('login')">Login</button>
+                <button class="auth-tab" id="registerTab" onclick="switchTab('register')">Register</button>
+            </div>
+
+            <div class="auth-error" id="authError"></div>
+
+            <input class="auth-input" type="text" id="authUsername" placeholder="Username" autocomplete="username" />
+            <input class="auth-input" type="password" id="authPassword" placeholder="Password" autocomplete="current-password" />
+            <button class="auth-submit" id="authSubmit" onclick="submitAuth()">Login</button>
+        </div>
+    </div>
+
+    <!-- ─── Chat UI ─────────────────────────────────────────────────────────── -->
+    <div class="app-layout" id="appLayout" style="display:none">
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
                 <span class="sidebar-title">Conversations</span>
                 <button class="new-chat-btn" id="newChatBtn" title="New chat">＋</button>
             </div>
-            <div class="conversation-list" id="conversationList">
-                <!-- Populated by JS -->
-            </div>
+            <div class="conversation-list" id="conversationList"></div>
         </aside>
 
-        <!-- Main area -->
         <div class="main-area">
             <div class="header">
                 <button class="sidebar-toggle" id="sidebarToggle" title="Toggle sidebar">☰</button>
                 <h1>🤖 Personal AI Assistant</h1>
+                <div class="header-right">
+                    <span class="header-username" id="headerUsername"></span>
+                    <button class="logout-btn" onclick="logout()">Logout</button>
+                </div>
             </div>
 
             <div class="chat-container">
@@ -38,19 +59,14 @@
                     <div class="input-container">
                         <input type="file" id="imageInput" class="image-input" accept="image/*">
                         <button class="button image" onclick="document.getElementById('imageInput').click()">📎</button>
-
                         <textarea id="messageInput" placeholder="Type your message..." rows="1"></textarea>
-
-                        <button class="button send" id="sendButton" onclick="sendMessage()">
-                            Send
-                        </button>
+                        <button class="button send" id="sendButton" onclick="sendMessage()">Send</button>
                     </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Markdown parser -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="/static/app.js"></script>
 </body>

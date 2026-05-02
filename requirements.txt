@@ -12,3 +12,5 @@ deepagents==0.5.3
 psycopg[binary,pool]
 langgraph-checkpoint-postgres
 python-dotenv
+bcrypt
+PyJWT

@@ -28,8 +28,25 @@ async def close_pool():
 async def init_db(pool: AsyncConnectionPool):
     async with pool.connection() as conn:
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                username TEXT UNIQUE NOT NULL,
+                hashed_password TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS refresh_tokens (
+                token TEXT PRIMARY KEY,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                expires_at TIMESTAMPTZ NOT NULL,
+                revoked BOOLEAN DEFAULT FALSE
+            )
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS conversations (
                 thread_id TEXT PRIMARY KEY,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 title TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
