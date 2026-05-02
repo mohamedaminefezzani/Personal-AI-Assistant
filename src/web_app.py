@@ -316,15 +316,26 @@ async def get_messages(thread_id: str, req: Request, current_user: dict = Depend
             continue
         if not content:
             continue
+
+        role = "user" if msg_type == "human" else "assistant"
+
         if isinstance(content, list):
-            text_parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
-            content = " ".join(text_parts).strip()
-            if not content:
+            # Multi-part message (text + possibly image)
+            parts = []
+            for c in content:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "text" and c.get("text", "").strip():
+                    parts.append({"type": "text", "text": c["text"]})
+                elif c.get("type") == "image_url":
+                    url = c.get("image_url", {}).get("url", "")
+                    if url:
+                        parts.append({"type": "image_url", "url": url})
+            if not parts:
                 continue
-        result.append({
-            "role": "user" if msg_type == "human" else "assistant",
-            "content": content
-        })
+            result.append({"role": role, "parts": parts})
+        else:
+            result.append({"role": role, "content": content})
 
     return result
 

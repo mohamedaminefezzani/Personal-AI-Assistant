@@ -223,13 +223,37 @@ async function selectConversation(threadId, title) {
         for (const msg of messages) {
             const div = document.createElement('div');
             div.className = `message ${msg.role}`;
-            if (msg.role === 'assistant') {
-                div.innerHTML = marked.parse(msg.content);
+
+            if (msg.parts) {
+                // Multi-part message (text + image)
+                for (const part of msg.parts) {
+                    if (part.type === 'text') {
+                        if (msg.role === 'assistant') {
+                            const inner = document.createElement('div');
+                            inner.innerHTML = marked.parse(part.text);
+                            div.appendChild(inner);
+                        } else {
+                            const span = document.createElement('span');
+                            span.textContent = part.text;
+                            div.appendChild(span);
+                        }
+                    } else if (part.type === 'image_url') {
+                        const img = document.createElement('img');
+                        img.src = part.url;
+                        div.appendChild(img);
+                    }
+                }
             } else {
-                const span = document.createElement('span');
-                span.textContent = msg.content;
-                div.appendChild(span);
+                // Plain text message
+                if (msg.role === 'assistant') {
+                    div.innerHTML = marked.parse(msg.content);
+                } else {
+                    const span = document.createElement('span');
+                    span.textContent = msg.content;
+                    div.appendChild(span);
+                }
             }
+
             messagesDiv.appendChild(div);
         }
 
