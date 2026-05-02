@@ -38,7 +38,7 @@ def get_checkpointer(pool: AsyncConnectionPool) -> AsyncPostgresSaver:
     global _checkpointer
     if _checkpointer is None:
         _checkpointer = AsyncPostgresSaver(pool)
-        return _checkpointer
+    return _checkpointer
 
 def build_graph(main_agent, checkpointer):
     graph = StateGraph(MessagesState)

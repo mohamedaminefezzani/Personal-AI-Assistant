@@ -173,6 +173,43 @@ async def delete_conversation(thread_id: str, req: Request):
         )
     return {"deleted": thread_id}
 
+@app.get("/conversations/{thread_id}/messages")
+async def get_messages(thread_id: str, req: Request):
+    """Return the full message history for a conversation from the LangGraph checkpoint"""
+    graph = req.app.state.graph
+    config = {"configurable": {"thread_id": thread_id}}
+    state = await graph.aget_state(config)
+
+    print("STATE:", state)
+    print("STATE VALUES:", state.values if state else None)
+
+    if not state or not state.values.get("messages"):
+        return []
+
+    result = []
+    for msg in state.values["messages"]:
+        msg_type = getattr(msg, "type", None)  # "human" or "ai"
+        content = msg.content
+
+        # Skip tool messages and empty AI messages (e.g. tool-call-only turns)
+        if msg_type not in ("human", "ai"):
+            continue
+        if not content:
+            continue
+        # Skip AI messages that are just tool invocations (content is a list of tool_use blocks)
+        if isinstance(content, list):
+            text_parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
+            content = " ".join(text_parts).strip()
+            if not content:
+                continue
+
+        result.append({
+            "role": "user" if msg_type == "human" else "assistant",
+            "content": content
+        })
+
+    return result
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

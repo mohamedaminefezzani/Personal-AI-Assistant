@@ -70,7 +70,7 @@ function appendConversationItem(conv) {
     conversationList.appendChild(item);
 }
 
-function selectConversation(threadId, title) {
+async function selectConversation(threadId, title) {
     currentThreadId = threadId;
 
     // Update active state in sidebar
@@ -78,8 +78,37 @@ function selectConversation(threadId, title) {
         el.classList.toggle('active', el.dataset.threadId === threadId);
     });
 
-    // Clear chat area and show placeholder
-    messagesDiv.innerHTML = `<div class="message assistant">Conversation: <strong>${title}</strong>. What's on your mind?</div>`;
+    // Clear chat and show loading state
+    messagesDiv.innerHTML = `<div class="message assistant">Loading...</div>`;
+
+    try {
+        const res = await fetch(`/conversations/${threadId}/messages`);
+        const messages = await res.json();
+
+        messagesDiv.innerHTML = '';
+
+        if (messages.length === 0) {
+            messagesDiv.innerHTML = `<div class="message assistant">Conversation: <strong>${title}</strong>. What's on your mind?</div>`;
+            return;
+        }
+
+        for (const msg of messages) {
+            const div = document.createElement('div');
+            div.className = `message ${msg.role}`;
+            if (msg.role === 'assistant') {
+                div.innerHTML = marked.parse(msg.content);
+            } else {
+                const span = document.createElement('span');
+                span.textContent = msg.content;
+                div.appendChild(span);
+            }
+            messagesDiv.appendChild(div);
+        }
+
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    } catch (e) {
+        messagesDiv.innerHTML = `<div class="message assistant">Failed to load messages.</div>`;
+    }
 }
 
 async function createNewConversation() {
