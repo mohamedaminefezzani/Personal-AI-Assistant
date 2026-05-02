@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
@@ -7,18 +7,15 @@ from typing import Optional
 from pydantic import BaseModel
 from pathlib import Path
 import json
+import uuid
 
 from llm.init_llm import LLM
 from llm.graph import get_checkpointer, build_graph
 from llm.tools import search_web_tool
-from llm.db import get_pool, close_pool
+from llm.db import get_pool, close_pool, init_db
 
 from langchain.agents import create_agent
 from datetime import datetime
-
-import asyncio
-
-asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 # Initialize the agents
 today = datetime.now()
@@ -44,9 +41,11 @@ main_agent = create_agent(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     pool = await get_pool()
+    await init_db(pool)  # Create conversations table if not exists
     checkpointer = get_checkpointer(pool)
     await checkpointer.setup()
     app.state.graph = build_graph(main_agent, checkpointer)
+    app.state.pool = pool
     yield
 
     await close_pool()
@@ -63,6 +62,9 @@ class ChatRequest(BaseModel):
     message: str
     thread_id: str
     image: Optional[str] = None
+
+class ConversationRequest(BaseModel):
+    title: Optional[str] = "New Chat"
 
 async def stream_agent_response(request: Request, message: str, image_data: Optional[str], thread_id: str):
     graph = request.app.state.graph
@@ -117,6 +119,59 @@ async def chat(request: ChatRequest, req: Request):
         stream_agent_response(req, request.message, request.image, request.thread_id),
         media_type="text/event-stream"
     )
+
+####################################################################################################
+# Conversation endpoints
+
+@app.get("/conversations")
+async def list_conversations(req: Request):
+    """Return all conversations ordered by most recent first"""
+    pool = req.app.state.pool
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT thread_id, title, created_at FROM conversations ORDER BY created_at DESC"
+            )
+            rows = await cur.fetchall()
+            return [
+                {"thread_id": row[0], "title": row[1], "created_at": row[2].isoformat()}
+                for row in rows
+            ]
+
+@app.post("/conversations")
+async def create_conversation(body: ConversationRequest, req: Request):
+    """Create a new conversation and return its thread_id"""
+    pool = req.app.state.pool
+    thread_id = str(uuid.uuid4())
+    title = body.title or "New Chat"
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO conversations (thread_id, title) VALUES (%s, %s)",
+            (thread_id, title)
+        )
+    return {"thread_id": thread_id, "title": title}
+
+@app.patch("/conversations/{thread_id}")
+async def rename_conversation(thread_id: str, body: ConversationRequest, req: Request):
+    """Rename a conversation"""
+    pool = req.app.state.pool
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE conversations SET title = %s WHERE thread_id = %s",
+            (body.title, thread_id)
+        )
+    return {"thread_id": thread_id, "title": body.title}
+
+@app.delete("/conversations/{thread_id}")
+async def delete_conversation(thread_id: str, req: Request):
+    """Delete a conversation"""
+    pool = req.app.state.pool
+    async with pool.connection() as conn:
+        await conn.execute(
+            "DELETE FROM conversations WHERE thread_id = %s",
+            (thread_id,)
+        )
+    return {"deleted": thread_id}
 
 if __name__ == "__main__":
     import uvicorn

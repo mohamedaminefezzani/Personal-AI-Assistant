@@ -10,20 +10,186 @@ body {
     height: 100vh;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
+}
+
+/* ─── App layout ────────────────────────────────────────────────────────────── */
+
+.app-layout {
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* ─── Sidebar ───────────────────────────────────────────────────────────────── */
+
+.sidebar {
+    width: 260px;
+    min-width: 260px;
+    background: #1e2a38;
+    display: flex;
+    flex-direction: column;
+    transition: width 0.25s ease, min-width 0.25s ease;
+    overflow: hidden;
+}
+
+.sidebar.collapsed {
+    width: 0;
+    min-width: 0;
+}
+
+.sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    flex-shrink: 0;
+}
+
+.sidebar-title {
+    color: #a0aec0;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.new-chat-btn {
+    background: #007bff;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    width: 28px;
+    height: 28px;
+    font-size: 1.1rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.2s;
+}
+
+.new-chat-btn:hover {
+    background: #0056b3;
+}
+
+.conversation-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.5rem;
+}
+
+.conversation-list::-webkit-scrollbar {
+    width: 4px;
+}
+
+.conversation-list::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.1);
+    border-radius: 4px;
+}
+
+.conv-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.6rem 0.75rem;
+    border-radius: 8px;
+    cursor: pointer;
+    color: #cbd5e0;
+    font-size: 0.875rem;
+    transition: background 0.15s;
+    gap: 0.5rem;
+    white-space: nowrap;
+}
+
+.conv-item:hover {
+    background: rgba(255,255,255,0.07);
+}
+
+.conv-item.active {
+    background: rgba(0, 123, 255, 0.25);
+    color: white;
+}
+
+.conv-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.conv-delete {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 0.8rem;
+    opacity: 0;
+    transition: opacity 0.15s;
+    padding: 2px 4px;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+
+.conv-item:hover .conv-delete {
+    opacity: 0.6;
+}
+
+.conv-delete:hover {
+    opacity: 1 !important;
+    background: rgba(255,255,255,0.1);
+}
+
+.no-convs {
+    color: #4a5568;
+    font-size: 0.8rem;
+    text-align: center;
+    padding: 1.5rem 1rem;
+}
+
+/* ─── Main area ─────────────────────────────────────────────────────────────── */
+
+.main-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
 
 .header {
     background: #2c3e50;
     color: white;
     padding: 1rem;
-    text-align: center;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    flex-shrink: 0;
+}
+
+.sidebar-toggle {
+    background: none;
+    border: none;
+    color: white;
+    font-size: 1.2rem;
+    cursor: pointer;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    transition: background 0.2s;
+    flex-shrink: 0;
+}
+
+.sidebar-toggle:hover {
+    background: rgba(255,255,255,0.1);
 }
 
 .header h1 {
     font-size: 1.5rem;
     font-weight: 500;
 }
+
+/* ─── Chat container ────────────────────────────────────────────────────────── */
 
 .chat-container {
     flex: 1;
@@ -34,6 +200,7 @@ body {
     margin: 0 auto;
     background: white;
     box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    overflow: hidden;
 }
 
 .messages {
@@ -76,10 +243,13 @@ body {
     box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
+/* ─── Input area ────────────────────────────────────────────────────────────── */
+
 .input-area {
     padding: 1rem;
     border-top: 1px solid #dee2e6;
     background: white;
+    flex-shrink: 0;
 }
 
 .input-container {
@@ -152,6 +322,8 @@ textarea:focus {
     display: none;
 }
 
+/* ─── Typing indicator ──────────────────────────────────────────────────────── */
+
 .typing-indicator {
     display: none;
     align-self: flex-start;
@@ -182,7 +354,8 @@ textarea:focus {
     30% { opacity: 1; }
 }
 
-/* Markdown styling */
+/* ─── Markdown styling ──────────────────────────────────────────────────────── */
+
 .message.assistant h1,
 .message.assistant h2,
 .message.assistant h3 {

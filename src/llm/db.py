@@ -24,3 +24,13 @@ async def close_pool():
     if _pool:
         await _pool.close()
         _pool = None
+
+async def init_db(pool: AsyncConnectionPool):
+    async with pool.connection() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS conversations (
+                thread_id TEXT PRIMARY KEY,
+                title TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
