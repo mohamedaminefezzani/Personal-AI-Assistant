@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 echo "Installing Ollama..."
 curl -fsSL https://ollama.com/install.sh | sh
@@ -7,6 +8,6 @@ echo "Pulling model..."
 ollama pull ministral-3:3b
 
 echo "Installing requirements..."
-python3 -m pip install -r requirements.txt
+pip install -r requirements.txt
 
 echo "Installation complete"
