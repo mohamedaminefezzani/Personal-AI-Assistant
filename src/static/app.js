@@ -19,8 +19,17 @@ const sidebarToggle     = document.getElementById('sidebarToggle');
 const sidebar           = document.getElementById('sidebar');
 
 let currentImage    = null;
+let currentFiles    = []; // code files
 let currentThreadId = null;
 let currentTab      = 'login';
+
+const LANG_MAP = {
+    py: 'python', js: 'javascript', ts: 'typescript',
+    html: 'html', css: 'css', java: 'java', cpp: 'cpp',
+    c: 'c', go: 'go', rs: 'rust', md: 'markdown',
+    json: 'json', yaml: 'yaml', yml: 'yaml', sh: 'bash',
+    txt: 'text'
+};
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -86,6 +95,7 @@ function showAuth() {
     // Reset all chat state so the next user starts clean
     currentThreadId = null;
     currentImage = null;
+    clearFiles();
     conversationList.innerHTML = '';
     messagesDiv.innerHTML = '<div class="message assistant">Hello! I\'m your personal AI assistant. How can I help you today?</div>';
     imagePreview.classList.remove('show');
@@ -304,20 +314,73 @@ async function deleteConversation(threadId) {
 
 newChatBtn.addEventListener('click', createNewConversation);
 
-// ─── Image handling ───────────────────────────────────────────────────────────
+// ─── File handling ────────────────────────────────────────────────────────────
 
-imageInput.addEventListener('change', function(e) {
-    const file = e.target.files[0];
-    if (file) {
-        const reader = new FileReader();
-        reader.onload = function(e) {
-            currentImage = e.target.result;
-            imagePreview.src = currentImage;
-            imagePreview.classList.add('show');
-        };
-        reader.readAsDataURL(file);
+const fileChipsContainer = document.getElementById('fileChips');
+
+imageInput.addEventListener('change', async function(e) {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+
+    for (const file of files) {
+        if (file.type.startsWith('image/')) {
+            // Handle as image (only last image wins, matching original behaviour)
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                currentImage = e.target.result;
+                imagePreview.src = currentImage;
+                imagePreview.classList.add('show');
+            };
+            reader.readAsDataURL(file);
+        } else {
+            // Handle as code file
+            const text = await file.text();
+            const ext = file.name.split('.').pop().toLowerCase();
+            const lang = LANG_MAP[ext] || ext;
+            currentFiles.push({ name: file.name, lang, content: text });
+            renderFileChip(file.name, currentFiles.length - 1);
+        }
     }
+
+    // Reset input so the same file can be re-selected if removed
+    imageInput.value = '';
 });
+
+function renderFileChip(name, index) {
+    const chip = document.createElement('div');
+    chip.className = 'file-chip';
+    chip.dataset.index = index;
+
+    const icon = document.createElement('span');
+    icon.className = 'file-chip-icon';
+    icon.textContent = '📄';
+
+    const label = document.createElement('span');
+    label.className = 'file-chip-name';
+    label.textContent = name;
+    label.title = name;
+
+    const remove = document.createElement('button');
+    remove.className = 'file-chip-remove';
+    remove.textContent = '×';
+    remove.addEventListener('click', () => {
+        currentFiles.splice(index, 1);
+        chip.remove();
+        if (currentFiles.length === 0) fileChipsContainer.classList.remove('show');
+    });
+
+    chip.appendChild(icon);
+    chip.appendChild(label);
+    chip.appendChild(remove);
+    fileChipsContainer.appendChild(chip);
+    fileChipsContainer.classList.add('show');
+}
+
+function clearFiles() {
+    currentFiles = [];
+    fileChipsContainer.innerHTML = '';
+    fileChipsContainer.classList.remove('show');
+}
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────
 
@@ -337,12 +400,21 @@ messageInput.addEventListener('keydown', function(e) {
 
 async function sendMessage() {
     const message = messageInput.value.trim();
-    if (!message && !currentImage) return;
+    if (!message && !currentImage && currentFiles.length === 0) return;
 
     if (!currentThreadId) await createNewConversation();
 
     sendButton.disabled = true;
     messageInput.disabled = true;
+
+    // Build full message: user text + appended code files
+    let fullMessage = message;
+    if (currentFiles.length > 0) {
+        const codeBlocks = currentFiles.map(f =>
+            `### File: ${f.name}\n\`\`\`${f.lang}\n${f.content}\n\`\`\``
+        ).join('\n\n');
+        fullMessage = message ? `${message}\n\n${codeBlocks}` : codeBlocks;
+    }
 
     const userMessageDiv = document.createElement('div');
     userMessageDiv.className = 'message user';
@@ -352,6 +424,20 @@ async function sendMessage() {
         textSpan.textContent = message;
         userMessageDiv.appendChild(textSpan);
     }
+
+    // Show file chips in the message bubble
+    if (currentFiles.length > 0) {
+        const filesDiv = document.createElement('div');
+        filesDiv.className = 'message-files';
+        for (const f of currentFiles) {
+            const chip = document.createElement('span');
+            chip.className = 'message-file-chip';
+            chip.textContent = `📄 ${f.name}`;
+            filesDiv.appendChild(chip);
+        }
+        userMessageDiv.appendChild(filesDiv);
+    }
+
     if (currentImage) {
         const img = document.createElement('img');
         img.src = currentImage;
@@ -373,7 +459,7 @@ async function sendMessage() {
         const response = await apiFetch('/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message, thread_id: currentThreadId, image: currentImage })
+            body: JSON.stringify({ message: fullMessage, thread_id: currentThreadId, image: currentImage })
         });
 
         typingDiv.remove();
@@ -417,6 +503,7 @@ async function sendMessage() {
     currentImage = null;
     imagePreview.classList.remove('show');
     imageInput.value = '';
+    clearFiles();
     sendButton.disabled = false;
     messageInput.disabled = false;
     messageInput.focus();
@@ -424,5 +511,26 @@ async function sendMessage() {
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
+const renderer = new marked.Renderer();
+renderer.code = function({ text, lang }) {
+    const language = lang || '';
+    return `
+        <div class="code-block">
+            <button class="copy-btn">Copy</button>
+            <pre><code class="language-${language}">${text}</code></pre>
+        </div>
+    `;
+};
+marked.setOptions({ renderer });
+
+messagesDiv.addEventListener('click', function(e) {
+    if (e.target.classList.contains('copy-btn')) {
+        const code = e.target.nextElementSibling.querySelector('code').innerText;
+        navigator.clipboard.writeText(code).then(() => {
+            e.target.textContent = 'Copied ✓';
+            setTimeout(() => e.target.textContent = 'Copy', 2000);
+        });
+    }
+});
 
 initSession();

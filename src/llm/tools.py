@@ -6,7 +6,7 @@ from langchain.tools import tool
 from langchain_tavily import TavilySearch
 
 # APIs
-tavily_api = os.environ["TAVILY_API_KEY"]
+tavily_api = os.getenv("TAVILY_API_KEY")
 
 # Check internet connected
 def is_connected():

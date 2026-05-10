@@ -463,6 +463,79 @@ textarea:focus {
     display: none;
 }
 
+/* ─── File chips ────────────────────────────────────────────────────────────── */
+
+.file-chips {
+    display: none;
+    flex-direction: row;
+    gap: 0.5rem;
+    overflow-x: auto;
+    padding-bottom: 0.5rem;
+    margin-bottom: 0.25rem;
+    scrollbar-width: thin;
+}
+
+.file-chips.show {
+    display: flex;
+}
+
+.file-chip {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: #f0f4ff;
+    border: 1px solid #c7d7ff;
+    border-radius: 8px;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.8rem;
+    color: #3a5bc7;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.file-chip-icon {
+    font-size: 0.85rem;
+}
+
+.file-chip-name {
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.file-chip-remove {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: #7a8fa6;
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0 2px;
+    border-radius: 4px;
+    transition: color 0.15s;
+}
+
+.file-chip-remove:hover {
+    color: #e74c3c;
+}
+
+/* ─── Message file chips (inside sent message bubble) ───────────────────────── */
+
+.message-files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+}
+
+.message-file-chip {
+    background: rgba(255,255,255,0.2);
+    border-radius: 6px;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
+
 /* ─── Typing indicator ──────────────────────────────────────────────────────── */
 
 .typing-indicator {
@@ -540,4 +613,28 @@ textarea:focus {
 .message.assistant pre code {
     background: none;
     color: inherit;
+}
+
+.code-block {
+    position: relative;
+    margin-top: 8px;
+}
+
+.copy-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(255,255,255,0.1);
+    color: #ccc;
+    border: none;
+    border-radius: 5px;
+    padding: 3px 10px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.copy-btn:hover {
+    background: rgba(255,255,255,0.2);
+    color: white;
 }

@@ -7,9 +7,6 @@ from langgraph.prebuilt import ToolNode
 from llm.tools import search_web_tool
 
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
 
 _checkpointer: AsyncPostgresSaver | None = None
 
