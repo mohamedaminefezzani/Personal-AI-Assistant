@@ -6,7 +6,7 @@ Still in its early phases, this repo provides the basic foundation of the agent 
 # Technical Details
 
 The agent is powered by Mistral's recent LLM, **Ministral 3 3b**. It is capable of processing images, handling different languages, as well as calling tools.
-Currently, only web search is implemented. Chat memory is session-persistent
+Currently, only web search is implemented. Chat memory is checkpointed in a Postgres database
 
 # Current Project Structure (needs more organizing)
 
@@ -14,15 +14,15 @@ Currently, only web search is implemented. Chat memory is session-persistent
 |─── requirements.txt
 |─── venv
 |─── src
-     |─── main.py (CLI testing)
-     |─── web_app.py (Web interface)
-     |─── llm
-          |─── .env
+     |─── .env.example
+     |─── create_agents.py
+     |─── main.py
+     |─── db
           |─── db.py
+     |─── llm
           |─── graph.py
           |─── init_llm.py
           |─── tools.py
-          |─── utils.py
      |─── static
           |─── app.js
           |─── index.html
@@ -35,6 +35,7 @@ Currently, only web search is implemented. Chat memory is session-persistent
 - Postgres connection string (I'm currently using a Neon Serverless Postgres instance for testing) stored in a `.env` file as `DATABASE_URL=conn_string` (replace `conn_string` with your connection string)
 - Ollama running, Ministral 3 and codellama weights (`ollama pull ministral-3:3b`, `ollama pull codellama:7b`)
 - Tavily API key **set as an environment variable** (for web search calls)
+- JWT secret, you can generate one by running the following command: `openssl rand -hex 32`
 
 # Getting Started
 
@@ -44,10 +45,10 @@ Currently, only web search is implemented. Chat memory is session-persistent
    - `source venv/bin/activate` (for Linux) or `venv/Scripts/activate` (for Windows)
    - `pip install -qr requirements.txt`
 3. Run *web_app.py*
-   - `python web_app.py`
+   - `python main.py`
   
 Now, you can con converse.
 
 **NOTE: Ollama must be running in the background. To do so, either:**
-- run `ollama serve` in a separate terminal if on Linux.
+- run `ollama serve` in a separate terminal if on Linux and if it doesn't initialize on boot.
 - open the app in background on Windows.
