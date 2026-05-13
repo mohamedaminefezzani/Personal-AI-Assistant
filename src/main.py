@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from pathlib import Path
 import json
 import uuid
+import re
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -266,6 +267,35 @@ async def delete_conversation(thread_id: str, req: Request, current_user: dict =
         )
     return {"deleted": thread_id}
 
+FILE_BLOCK_RE = re.compile(
+    r'### File: (.+?)\n```\w*\n([\s\S]+?)```',
+    re.MULTILINE
+)
+
+def parse_user_message(content: str) -> dict:
+    """
+    If a plain-text user message contains ### File: blocks,
+    split it into parts: text and file chips (with content for download).
+    Otherwise return as plain content.
+    """
+    if "### File:" not in content:
+        return {"content": content}
+
+    parts = []
+
+    first_match = FILE_BLOCK_RE.search(content)
+    if first_match:
+        pre_text = content[:first_match.start()].strip()
+        if pre_text:
+            parts.append({"type": "text", "text": pre_text})
+
+    for match in FILE_BLOCK_RE.finditer(content):
+        filename = match.group(1).strip()
+        file_content = match.group(2)
+        parts.append({"type": "file", "name": filename, "content": file_content})
+
+    return {"parts": parts} if parts else {"content": content}
+
 @app.get("/conversations/{thread_id}/messages")
 async def get_messages(thread_id: str, req: Request, current_user: dict = Depends(get_current_user)):
     # Verify ownership
@@ -313,7 +343,10 @@ async def get_messages(thread_id: str, req: Request, current_user: dict = Depend
                 continue
             result.append({"role": role, "parts": parts})
         else:
-            result.append({"role": role, "content": content})
+            if role == "user":
+                result.append({**parse_user_message(content), "role": role})
+            else:
+                result.append({"role": role, "content": content})
 
     return result
 

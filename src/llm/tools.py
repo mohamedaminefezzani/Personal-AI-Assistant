@@ -48,3 +48,9 @@ def search_web_tool(query: str, max_results: Optional[int] = 5, topic: Optional[
     results = tavily_search_tool.invoke(query)
 
     return str(results)
+
+@tool
+def write_to_file(file_name, input):
+    """
+    """
+    pass

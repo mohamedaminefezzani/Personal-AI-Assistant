@@ -251,6 +251,22 @@ async function selectConversation(threadId, title) {
                         const img = document.createElement('img');
                         img.src = part.url;
                         div.appendChild(img);
+                    } else if (part.type === 'file') {
+                        let filesDiv = div.querySelector('.message-files');
+                        if (!filesDiv) {
+                            filesDiv = document.createElement('div');
+                            filesDiv.className = 'message-files';
+                            div.appendChild(filesDiv);
+                        }
+                        const chip = document.createElement('span');
+                        chip.className = 'message-file-chip';
+                        chip.textContent = `📄 ${part.name}`;
+                        if (part.content) {
+                            chip.title = 'Click to download';
+                            chip.style.cursor = 'pointer';
+                            chip.addEventListener('click', () => downloadFile(part.name, part.content));
+                        }
+                        filesDiv.appendChild(chip);
                     }
                 }
             } else {
@@ -406,6 +422,8 @@ async function sendMessage() {
 
     sendButton.disabled = true;
     messageInput.disabled = true;
+    imagePreview.innerHTML = "";
+    fileChipsContainer.innerHTML = "";
 
     // Build full message: user text + appended code files
     let fullMessage = message;
@@ -433,6 +451,7 @@ async function sendMessage() {
             const chip = document.createElement('span');
             chip.className = 'message-file-chip';
             chip.textContent = `📄 ${f.name}`;
+            chip.addEventListener('click', () => downloadFile(f.name, f.content)); //
             filesDiv.appendChild(chip);
         }
         userMessageDiv.appendChild(filesDiv);
@@ -510,7 +529,18 @@ async function sendMessage() {
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
-// ─── Init ─────────────────────────────────────────────────────────────────────
+// ─── File download ────────────────────────────────────────────────────────────
+
+function downloadFile(name, content) {
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
 const renderer = new marked.Renderer();
 renderer.code = function({ text, lang }) {
     const language = lang || '';
@@ -532,5 +562,7 @@ messagesDiv.addEventListener('click', function(e) {
         });
     }
 });
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
 
 initSession();

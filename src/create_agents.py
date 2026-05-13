@@ -6,7 +6,7 @@ from datetime import datetime
 
 def init_main_agent():
     today = datetime.now()
-    main_model = LLM().model
+    main_model = LLM(llm="ministral-3:14b").model
 
     main_system_prompt = f"""
     You are a main assistant to help with general tasks. You have various tools at your disposal

@@ -624,6 +624,9 @@ textarea:focus {
     position: absolute;
     top: 8px;
     right: 8px;
+    z-index: 1;
+    opacity: 0;
+    transition: background 0.2s, opacity 0.2s;
     background: rgba(255,255,255,0.1);
     color: #ccc;
     border: none;
@@ -631,7 +634,10 @@ textarea:focus {
     padding: 3px 10px;
     font-size: 0.75rem;
     cursor: pointer;
-    transition: background 0.2s;
+}
+
+.code-block:hover .copy-btn {
+    opacity: 1;
 }
 
 .copy-btn:hover {
