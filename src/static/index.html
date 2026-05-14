@@ -58,7 +58,7 @@
                     <img id="imagePreview" class="image-preview" alt="Preview">
                     <div id="fileChips" class="file-chips"></div>
                     <div class="input-container">
-                        <input type="file" id="imageInput" class="image-input" accept="image/*,text/plain,text/x-python,text/javascript,text/html,text/css,.ts,.go,.rs,.java,.cpp,.c" multiple>
+                        <input type="file" id="imageInput" class="image-input" accept="image/*,text/plain,text/x-python,text/javascript,text/html,text/css,.ts,.go,.rs,.java,.cpp,.c,.zip" multiple>
                         <button class="button image" onclick="document.getElementById('imageInput').click()">📎</button>
                         <textarea id="messageInput" placeholder="Type your message..." rows="1"></textarea>
                         <button class="button send" id="sendButton" onclick="sendMessage()">Send</button>
@@ -69,6 +69,7 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

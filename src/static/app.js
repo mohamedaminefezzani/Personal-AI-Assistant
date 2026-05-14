@@ -348,6 +348,8 @@ imageInput.addEventListener('change', async function(e) {
                 imagePreview.classList.add('show');
             };
             reader.readAsDataURL(file);
+        } else if (file.name.endsWith('.zip')) {
+            await handleZipFile(file);
         } else {
             // Handle as code file
             const text = await file.text();
@@ -398,6 +400,70 @@ function clearFiles() {
     fileChipsContainer.classList.remove('show');
 }
 
+async function handleZipFile(file) {
+    const zip = await JSZip.loadAsync(file);
+
+    const entries = [];
+    zip.forEach((relativePath, entry) => {
+        if (!entry.dir) entries.push({ path: relativePath, entry });
+    });
+
+    // Filter out unwanted files
+    const skip = (path) =>
+        path.includes('__pycache__') ||
+        path.includes('node_modules') ||
+        path.includes('.git') ||
+        path.endsWith('.pyc') ||
+        path.endsWith('.DS_Store');
+
+    const filtered = entries.filter(e => !skip(e.path));
+
+    // Build tree summary
+    const tree = buildFileTree(filtered.map(e => e.path));
+
+    // Read each file's content
+    const files = [];
+    for (const { path, entry } of filtered) {
+        try {
+            const content = await entry.async('string');
+            const ext = path.split('.').pop().toLowerCase();
+            const lang = LANG_MAP[ext] || ext;
+            files.push({ name: path, lang, content });
+        } catch {
+            // skip binary files that can't be read as string
+        }
+    }
+
+    // Prepend tree as a special entry
+    files.unshift({
+        name: `${file.name} — file tree`,
+        lang: 'text',
+        content: tree,
+        isTree: true
+    });
+
+    currentFiles.push({
+    name: file.name,
+    isZip: true,
+    files: files  // all files including the tree entry
+    });
+    renderFileChip(file.name, currentFiles.length - 1);
+}
+
+function buildFileTree(paths) {
+    const lines = [`📦 ${paths.length} files\n`];
+    const sorted = [...paths].sort();
+
+    for (const path of sorted) {
+        const parts = path.split('/');
+        const depth = parts.length - 1;
+        const indent = '  '.repeat(depth);
+        lines.push(`${indent}📄 ${parts[parts.length - 1]}`);
+    }
+
+    return lines.join('\n');
+}
+
 // ─── UI helpers ───────────────────────────────────────────────────────────────
 
 messageInput.addEventListener('input', function() {
@@ -422,15 +488,18 @@ async function sendMessage() {
 
     sendButton.disabled = true;
     messageInput.disabled = true;
-    imagePreview.innerHTML = "";
-    fileChipsContainer.innerHTML = "";
 
     // Build full message: user text + appended code files
     let fullMessage = message;
     if (currentFiles.length > 0) {
-        const codeBlocks = currentFiles.map(f =>
-            `### File: ${f.name}\n\`\`\`${f.lang}\n${f.content}\n\`\`\``
-        ).join('\n\n');
+        const codeBlocks = currentFiles.map(f => {
+            if (f.isZip) {
+                return f.files.map(zf =>
+                    `### File: ${zf.name}\n\`\`\`${zf.lang}\n${zf.content}\n\`\`\``
+                ).join('\n\n');
+            }
+            return `### File: ${f.name}\n\`\`\`${f.lang}\n${f.content}\n\`\`\``;
+        }).join('\n\n');
         fullMessage = message ? `${message}\n\n${codeBlocks}` : codeBlocks;
     }
 
@@ -451,7 +520,12 @@ async function sendMessage() {
             const chip = document.createElement('span');
             chip.className = 'message-file-chip';
             chip.textContent = `📄 ${f.name}`;
-            chip.addEventListener('click', () => downloadFile(f.name, f.content)); //
+            chip.title = f.isZip ? `${f.files.length} files` : 'Click to download';
+            if (f.isZip) {
+                chip.addEventListener('click', () => downloadZip(f));
+            } else {
+                chip.addEventListener('click', () => downloadFile(f.name, f.content));
+            }
             filesDiv.appendChild(chip);
         }
         userMessageDiv.appendChild(filesDiv);
@@ -537,6 +611,20 @@ function downloadFile(name, content) {
     const a = document.createElement('a');
     a.href = url;
     a.download = name;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+async function downloadZip(f) {
+    const zip = new JSZip();
+    for (const file of f.files) {
+        if (!file.isTree) zip.file(file.name, file.content);
+    }
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = f.name;
     a.click();
     URL.revokeObjectURL(url);
 }

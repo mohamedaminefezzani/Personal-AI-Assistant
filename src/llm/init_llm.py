@@ -7,5 +7,8 @@ class LLM:
         self.temp = temp
         self.model = ChatOllama(
             model=self.llm,
-            temperature=self.temp
+            temperature=self.temp,
+            num_predict=4096,
+            num_ctx=32768,
+            num_thread=6
         )

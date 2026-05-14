@@ -24,6 +24,7 @@ async def close_pool():
 
 async def init_db(pool: AsyncConnectionPool):
     async with pool.connection() as conn:
+        await conn.execute("BEGIN")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -48,3 +49,4 @@ async def init_db(pool: AsyncConnectionPool):
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
+        await conn.execute("COMMIT")
