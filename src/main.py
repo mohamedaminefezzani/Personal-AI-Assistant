@@ -17,6 +17,8 @@ import jwt as pyjwt
 from llm.graph import get_checkpointer, build_graph
 from db.db import get_pool, close_pool, init_db
 from create_agents import init_main_agent
+from langfuse import Langfuse, get_client
+from langfuse.langchain import CallbackHandler
 
 import os
 
@@ -34,9 +36,18 @@ FILE_BLOCK_RE = re.compile(
     re.MULTILINE
 )
 
-# ─── Agents ───────────────────────────────────────────────────────────────────
+# ─── Agents & LangFuse ───────────────────────────────────────────────────────────────────
 
 main_agent = init_main_agent()
+
+Langfuse(
+    public_key=os.environ["LANGFUSE_PUBLIC_KEY"],
+    secret_key=os.environ["LANGFUSE_SECRET_KEY"],
+    host="https://cloud.langfuse.com"
+)
+
+langfuse = get_client()
+langfuse_handler = CallbackHandler()
 
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
 
@@ -92,6 +103,7 @@ class ChatRequest(BaseModel):
     message: str
     thread_id: str
     image: Optional[str] = None
+    images: Optional[list[str]] = None  # multi-image support
 
 class ConversationRequest(BaseModel):
     title: Optional[str] = "New Chat"
@@ -190,19 +202,24 @@ async def me(current_user: dict = Depends(get_current_user)):
 
 # ─── Chat ─────────────────────────────────────────────────────────────────────
 
-async def stream_agent_response(request: Request, message: str, image_data: Optional[str], thread_id: str):
+async def stream_agent_response(request: Request, message: str, image_data: Optional[str], images: Optional[list[str]], thread_id: str):
     graph = request.app.state.graph
 
-    if image_data:
-        content = [
-            {"type": "text", "text": message},
-            {"type": "image_url", "image_url": {"url": image_data}}
-        ]
+    # Consolidate single image (legacy) and multi-image into one list
+    all_images = images or ([image_data] if image_data else [])
+
+    if all_images:
+        content = [{"type": "text", "text": message}]
+        for img in all_images:
+            content.append({"type": "image_url", "image_url": {"url": img}})
     else:
         content = message
 
     inputs = {"messages": [{"role": "user", "content": content}]}
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "callbacks": [langfuse_handler]
+    }
 
     try:
         last_message = None
@@ -217,11 +234,13 @@ async def stream_agent_response(request: Request, message: str, image_data: Opti
         yield f"data: {json.dumps({'done': True})}\n\n"
     except Exception as e:
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
+    finally:
+        langfuse.flush()
 
 @app.post("/chat")
 async def chat(request: ChatRequest, req: Request, current_user: dict = Depends(get_current_user)):
     return StreamingResponse(
-        stream_agent_response(req, request.message, request.image, request.thread_id),
+        stream_agent_response(req, request.message, request.image, request.images, request.thread_id),
         media_type="text/event-stream"
     )
 

@@ -12,13 +12,12 @@ const messagesDiv       = document.getElementById('messages');
 const messageInput      = document.getElementById('messageInput');
 const sendButton        = document.getElementById('sendButton');
 const imageInput        = document.getElementById('imageInput');
-const imagePreview      = document.getElementById('imagePreview');
 const conversationList  = document.getElementById('conversationList');
 const newChatBtn        = document.getElementById('newChatBtn');
 const sidebarToggle     = document.getElementById('sidebarToggle');
 const sidebar           = document.getElementById('sidebar');
 
-let currentImage    = null;
+let currentImages   = []; // supports up to 5 images
 let currentFiles    = []; // code files
 let currentThreadId = null;
 let currentTab      = 'login';
@@ -94,11 +93,10 @@ function showAuth() {
     authError.style.color = '';
     // Reset all chat state so the next user starts clean
     currentThreadId = null;
-    currentImage = null;
+    currentImages = [];
     clearFiles();
     conversationList.innerHTML = '';
     messagesDiv.innerHTML = '<div class="message assistant">Hello! I\'m your personal AI assistant. How can I help you today?</div>';
-    imagePreview.classList.remove('show');
     imageInput.value = '';
     messageInput.value = '';
 }
@@ -248,8 +246,15 @@ async function selectConversation(threadId, title) {
                             div.appendChild(span);
                         }
                     } else if (part.type === 'image_url') {
+                        let imgGrid = div.querySelector('.message-image-grid');
+                        if (!imgGrid) {
+                            imgGrid = document.createElement('div');
+                            imgGrid.className = 'message-image-grid';
+                            div.appendChild(imgGrid);
+                        }
                         const img = document.createElement('img');
                         img.src = part.url;
+                        img.className = 'message-thumb';
                         div.appendChild(img);
                     } else if (part.type === 'file') {
                         let filesDiv = div.querySelector('.message-files');
@@ -340,12 +345,15 @@ imageInput.addEventListener('change', async function(e) {
 
     for (const file of files) {
         if (file.type.startsWith('image/')) {
-            // Handle as image (only last image wins, matching original behaviour)
+            if (currentImages.length >= 5) {
+                alert('Maximum 5 images per message.');
+                continue;
+            }
             const reader = new FileReader();
             reader.onload = function(e) {
-                currentImage = e.target.result;
-                imagePreview.src = currentImage;
-                imagePreview.classList.add('show');
+                const dataUrl = e.target.result;
+                currentImages.push(dataUrl);
+                renderImageChip(dataUrl, currentImages.length - 1);
             };
             reader.readAsDataURL(file);
         } else if (file.name.endsWith('.zip')) {
@@ -394,7 +402,34 @@ function renderFileChip(name, index) {
     fileChipsContainer.classList.add('show');
 }
 
+function renderImageChip(dataUrl, index) {
+    const chip = document.createElement('div');
+    chip.className = 'file-chip image-chip';
+    chip.dataset.imageIndex = index;
+
+    const thumb = document.createElement('img');
+    thumb.className = 'image-chip-thumb';
+    thumb.src = dataUrl;
+
+    const remove = document.createElement('button');
+    remove.className = 'file-chip-remove';
+    remove.textContent = '×';
+    remove.addEventListener('click', () => {
+        currentImages.splice(index, 1);
+        chip.remove();
+        if (currentImages.length === 0 && currentFiles.length === 0) {
+            fileChipsContainer.classList.remove('show');
+        }
+    });
+
+    chip.appendChild(thumb);
+    chip.appendChild(remove);
+    fileChipsContainer.appendChild(chip);
+    fileChipsContainer.classList.add('show');
+}
+
 function clearFiles() {
+    currentImages = [];
     currentFiles = [];
     fileChipsContainer.innerHTML = '';
     fileChipsContainer.classList.remove('show');
@@ -482,7 +517,7 @@ messageInput.addEventListener('keydown', function(e) {
 
 async function sendMessage() {
     const message = messageInput.value.trim();
-    if (!message && !currentImage && currentFiles.length === 0) return;
+    if (!message && currentImages.length === 0 && currentFiles.length === 0) return;
 
     if (!currentThreadId) await createNewConversation();
 
@@ -531,10 +566,17 @@ async function sendMessage() {
         userMessageDiv.appendChild(filesDiv);
     }
 
-    if (currentImage) {
-        const img = document.createElement('img');
-        img.src = currentImage;
-        userMessageDiv.appendChild(img);
+    // Show image thumbnails in message bubble
+    if (currentImages.length > 0) {
+        const imgGrid = document.createElement('div');
+        imgGrid.className = 'message-image-grid';
+        for (const dataUrl of currentImages) {
+            const img = document.createElement('img');
+            img.src = dataUrl;
+            img.className = 'message-thumb';
+            imgGrid.appendChild(img);
+        }
+        userMessageDiv.appendChild(imgGrid);
     }
 
     messagesDiv.appendChild(userMessageDiv);
@@ -552,7 +594,7 @@ async function sendMessage() {
         const response = await apiFetch('/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: fullMessage, thread_id: currentThreadId, image: currentImage })
+            body: JSON.stringify({ message: fullMessage, thread_id: currentThreadId, images: currentImages })
         });
 
         typingDiv.remove();
@@ -593,8 +635,7 @@ async function sendMessage() {
         }
     }
 
-    currentImage = null;
-    imagePreview.classList.remove('show');
+    clearFiles();
     imageInput.value = '';
     clearFiles();
     sendButton.disabled = false;
