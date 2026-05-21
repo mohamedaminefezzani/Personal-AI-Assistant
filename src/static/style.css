@@ -469,6 +469,26 @@ textarea:focus {
     border: 1px solid #c7d7ff;
 }
 
+.video-chip {
+    background: #f3f0ff;
+    border: 1px solid #c4b5fd;
+    color: #5b21b6;
+    gap: 0.4rem;
+}
+
+.video-chip-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
+}
+
+.video-chip-sub {
+    font-size: 0.7rem;
+    color: #7c3aed;
+    white-space: nowrap;
+}
+
 .image-chip-thumb {
     width: 48px;
     height: 48px;

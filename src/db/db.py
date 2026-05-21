@@ -2,6 +2,8 @@ from psycopg_pool import AsyncConnectionPool
 
 import os
 
+print(os.getenv("DATABASE_URL"))
+
 _pool: AsyncConnectionPool | None = None
 
 async def get_pool() -> AsyncConnectionPool:
@@ -46,6 +48,16 @@ async def init_db(pool: AsyncConnectionPool):
                 thread_id TEXT PRIMARY KEY,
                 user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 title TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS message_videos (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                thread_id TEXT NOT NULL,
+                message_index INT NOT NULL,  -- position in conversation
+                filename TEXT NOT NULL,
+                frame_count INT NOT NULL,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)

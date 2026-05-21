@@ -16,7 +16,7 @@ import jwt as pyjwt
 
 from llm.graph import get_checkpointer, build_graph
 from db.db import get_pool, close_pool, init_db
-from create_agents import init_main_agent
+from create_agents import init_main_agent, init_biomechanics_agent
 from langfuse import Langfuse, get_client
 from langfuse.langchain import CallbackHandler
 
@@ -39,6 +39,7 @@ FILE_BLOCK_RE = re.compile(
 # ─── Agents & LangFuse ───────────────────────────────────────────────────────────────────
 
 main_agent = init_main_agent()
+biomechanics_agent = init_biomechanics_agent()
 
 Langfuse(
     public_key=os.environ["LANGFUSE_PUBLIC_KEY"],
@@ -57,7 +58,7 @@ async def lifespan(app: FastAPI):
     await init_db(pool)
     checkpointer = get_checkpointer(pool)
     await checkpointer.setup()
-    app.state.graph = build_graph(main_agent, checkpointer)
+    app.state.graph = build_graph(main_agent, biomechanics_agent, checkpointer)
     app.state.pool = pool
     yield
     await close_pool()
@@ -103,7 +104,10 @@ class ChatRequest(BaseModel):
     message: str
     thread_id: str
     image: Optional[str] = None
-    images: Optional[list[str]] = None  # multi-image support
+    images: Optional[list[str]] = None
+    video_frames: Optional[list[str]] = None  # base64 frames from video
+    video_filename: Optional[str] = None
+    video_frame_count: Optional[int] = None
 
 class ConversationRequest(BaseModel):
     title: Optional[str] = "New Chat"
@@ -202,20 +206,42 @@ async def me(current_user: dict = Depends(get_current_user)):
 
 # ─── Chat ─────────────────────────────────────────────────────────────────────
 
-async def stream_agent_response(request: Request, message: str, image_data: Optional[str], images: Optional[list[str]], thread_id: str):
+async def stream_agent_response(
+    request: Request,
+    message: str,
+    image_data: Optional[str],
+    images: Optional[list[str]],
+    video_frames: Optional[list[str]],
+    video_filename: Optional[str],
+    video_frame_count: Optional[int],
+    thread_id: str):
+
     graph = request.app.state.graph
+    pool = request.app.state.pool
 
-    # Consolidate single image (legacy) and multi-image into one list
-    all_images = images or ([image_data] if image_data else [])
-
-    if all_images:
-        content = [{"type": "text", "text": message}]
-        for img in all_images:
-            content.append({"type": "image_url", "image_url": {"url": img}})
+    # Video frames — build multi-image content for biomechanics agent
+    if video_frames:
+        content = [{"type": "text", "text": message or "Analyze these biomechanics frames and assess injury risk."}]
+        for frame in video_frames:
+            content.append({"type": "image_url", "image_url": {"url": frame}})
+        inputs = {
+            "messages": [{"role": "user", "content": content}],
+            "video_frames": video_frames
+        }
     else:
-        content = message
+        # Regular message with optional images
+        all_images = images or ([image_data] if image_data else [])
+        if all_images:
+            content = [{"type": "text", "text": message}]
+            for img in all_images:
+                content.append({"type": "image_url", "image_url": {"url": img}})
+        else:
+            content = message
+        inputs = {
+            "messages": [{"role": "user", "content": content}],
+            "video_frames": None
+        }
 
-    inputs = {"messages": [{"role": "user", "content": content}]}
     config = {
         "configurable": {"thread_id": thread_id},
         "callbacks": [langfuse_handler]
@@ -225,9 +251,26 @@ async def stream_agent_response(request: Request, message: str, image_data: Opti
         last_message = None
         async for chunk in graph.astream(inputs, stream_mode="updates", config=config):
             print(chunk)
-            if 'main_agent' in chunk:
-                outputs = chunk['main_agent']['messages']
-                last_message = outputs[-1]
+            for agent_key in ("main_agent", "biomechanics_agent"):
+                if agent_key in chunk:
+                    outputs = chunk[agent_key]["messages"]
+                    last_message = outputs[-1]
+
+        # Save video metadata after successful response
+        if last_message and video_frames and video_filename and video_frame_count:
+            # message_index = number of human messages in the thread so far
+            state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            message_index = sum(
+                1 for m in state.values.get("messages", [])
+                if getattr(m, "type", None) == "human"
+            )
+            async with pool.connection() as conn:
+                await conn.execute(
+                    """INSERT INTO message_videos (thread_id, message_index, filename, frame_count)
+                       VALUES (%s, %s, %s, %s)
+                       ON CONFLICT (thread_id, message_index) DO NOTHING""",
+                    (thread_id, message_index, video_filename, video_frame_count)
+                )
 
         if last_message:
             yield f"data: {json.dumps({'content': last_message.content})}\n\n"
@@ -240,7 +283,16 @@ async def stream_agent_response(request: Request, message: str, image_data: Opti
 @app.post("/chat")
 async def chat(request: ChatRequest, req: Request, current_user: dict = Depends(get_current_user)):
     return StreamingResponse(
-        stream_agent_response(req, request.message, request.image, request.images, request.thread_id),
+        stream_agent_response(
+            req,
+            request.message,
+            request.image,
+            request.images,
+            request.video_frames,
+            request.video_filename,
+            request.video_frame_count,
+            request.thread_id
+        ),
         media_type="text/event-stream"
     )
 
@@ -319,7 +371,6 @@ async def delete_conversation(thread_id: str, req: Request, current_user: dict =
 
 @app.get("/conversations/{thread_id}/messages")
 async def get_messages(thread_id: str, req: Request, current_user: dict = Depends(get_current_user)):
-    # Verify ownership
     pool = req.app.state.pool
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
@@ -330,6 +381,14 @@ async def get_messages(thread_id: str, req: Request, current_user: dict = Depend
             if not await cur.fetchone():
                 raise HTTPException(status_code=403, detail="Forbidden")
 
+            # Fetch video metadata for this thread
+            await cur.execute(
+                "SELECT message_index, filename, frame_count FROM message_videos WHERE thread_id = %s",
+                (thread_id,)
+            )
+            video_rows = await cur.fetchall()
+            video_meta = {row[0]: {"filename": row[1], "frame_count": row[2]} for row in video_rows}
+
     graph = req.app.state.graph
     config = {"configurable": {"thread_id": thread_id}}
     state = await graph.aget_state(config)
@@ -338,6 +397,8 @@ async def get_messages(thread_id: str, req: Request, current_user: dict = Depend
         return []
 
     result = []
+    human_index = 0
+
     for msg in state.values["messages"]:
         msg_type = getattr(msg, "type", None)
         content = msg.content
@@ -349,18 +410,36 @@ async def get_messages(thread_id: str, req: Request, current_user: dict = Depend
         role = "user" if msg_type == "human" else "assistant"
 
         if isinstance(content, list):
-            # Multi-part message (text + possibly image)
             parts = []
-            for c in content:
-                if not isinstance(c, dict):
-                    continue
-                if c.get("type") == "text" and c.get("text", "").strip():
-                    parts.append({"type": "text", "text": c["text"]})
-                elif c.get("type") == "image_url":
-                    url = c.get("image_url", {}).get("url", "")
-                    if url:
-                        parts.append({"type": "image_url", "url": url})
+            image_url_count = sum(1 for c in content if isinstance(c, dict) and c.get("type") == "image_url")
+
+            # If this human message has many image_url parts, check if it's a video
+            if role == "user" and image_url_count > 5 and human_index in video_meta:
+                meta = video_meta[human_index]
+                # Extract text part if present
+                for c in content:
+                    if isinstance(c, dict) and c.get("type") == "text" and c.get("text", "").strip():
+                        parts.append({"type": "text", "text": c["text"]})
+                # Replace all image_url parts with a single video part
+                parts.append({
+                    "type": "video",
+                    "filename": meta["filename"],
+                    "frame_count": meta["frame_count"]
+                })
+            else:
+                for c in content:
+                    if not isinstance(c, dict):
+                        continue
+                    if c.get("type") == "text" and c.get("text", "").strip():
+                        parts.append({"type": "text", "text": c["text"]})
+                    elif c.get("type") == "image_url":
+                        url = c.get("image_url", {}).get("url", "")
+                        if url:
+                            parts.append({"type": "image_url", "url": url})
+
             if not parts:
+                if role == "user":
+                    human_index += 1
                 continue
             result.append({"role": role, "parts": parts})
         else:
@@ -368,6 +447,9 @@ async def get_messages(thread_id: str, req: Request, current_user: dict = Depend
                 result.append({**parse_user_message(content), "role": role})
             else:
                 result.append({"role": role, "content": content})
+
+        if role == "user":
+            human_index += 1
 
     return result
 

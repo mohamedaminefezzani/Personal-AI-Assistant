@@ -1,24 +1,25 @@
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
 
-const authScreen    = document.getElementById('authScreen');
-const appLayout     = document.getElementById('appLayout');
-const authUsername  = document.getElementById('authUsername');
-const authPassword  = document.getElementById('authPassword');
-const authError     = document.getElementById('authError');
-const authSubmit    = document.getElementById('authSubmit');
+const authScreen     = document.getElementById('authScreen');
+const appLayout      = document.getElementById('appLayout');
+const authUsername   = document.getElementById('authUsername');
+const authPassword   = document.getElementById('authPassword');
+const authError      = document.getElementById('authError');
+const authSubmit     = document.getElementById('authSubmit');
 const headerUsername = document.getElementById('headerUsername');
 
-const messagesDiv       = document.getElementById('messages');
-const messageInput      = document.getElementById('messageInput');
-const sendButton        = document.getElementById('sendButton');
-const imageInput        = document.getElementById('imageInput');
-const conversationList  = document.getElementById('conversationList');
-const newChatBtn        = document.getElementById('newChatBtn');
-const sidebarToggle     = document.getElementById('sidebarToggle');
-const sidebar           = document.getElementById('sidebar');
+const messagesDiv      = document.getElementById('messages');
+const messageInput     = document.getElementById('messageInput');
+const sendButton       = document.getElementById('sendButton');
+const imageInput       = document.getElementById('imageInput');
+const conversationList = document.getElementById('conversationList');
+const newChatBtn       = document.getElementById('newChatBtn');
+const sidebarToggle    = document.getElementById('sidebarToggle');
+const sidebar          = document.getElementById('sidebar');
 
-let currentImages   = []; // supports up to 5 images
-let currentFiles    = []; // code files
+let currentImages   = []; // up to 5 images
+let currentFiles    = []; // code files / zips
+let currentVideo    = null; // { name, frames[] }
 let currentThreadId = null;
 let currentTab      = 'login';
 
@@ -65,7 +66,6 @@ async function submitAuth() {
         }
 
         if (currentTab === 'register') {
-            // Auto-login after register
             authError.style.color = '#4caf50';
             authError.textContent = 'Account created! Logging in...';
             currentTab = 'login';
@@ -91,7 +91,6 @@ function showAuth() {
     authPassword.value = '';
     authError.textContent = '';
     authError.style.color = '';
-    // Reset all chat state so the next user starts clean
     currentThreadId = null;
     currentImages = [];
     clearFiles();
@@ -108,7 +107,6 @@ function showApp(username) {
     loadConversations();
 }
 
-// Try to restore session on load
 async function initSession() {
     try {
         const res = await fetch('/auth/me');
@@ -116,7 +114,6 @@ async function initSession() {
             const user = await res.json();
             showApp(user.username);
         } else if (res.status === 401) {
-            // Try refresh
             const refreshRes = await fetch('/auth/refresh', { method: 'POST' });
             if (refreshRes.ok) {
                 const user = await refreshRes.json();
@@ -130,14 +127,12 @@ async function initSession() {
     }
 }
 
-// Intercept 401s globally and redirect to login
 async function apiFetch(url, options = {}) {
     let res = await fetch(url, options);
     if (res.status === 401) {
-        // Try silent token refresh first
         const refreshRes = await fetch('/auth/refresh', { method: 'POST' });
         if (refreshRes.ok) {
-            res = await fetch(url, options); // retry
+            res = await fetch(url, options);
         } else {
             showAuth();
             throw new Error('Session expired');
@@ -146,19 +141,12 @@ async function apiFetch(url, options = {}) {
     return res;
 }
 
-// Enter key on auth inputs
-authPassword.addEventListener('keydown', e => {
-    if (e.key === 'Enter') submitAuth();
-});
-authUsername.addEventListener('keydown', e => {
-    if (e.key === 'Enter') authPassword.focus();
-});
+authPassword.addEventListener('keydown', e => { if (e.key === 'Enter') submitAuth(); });
+authUsername.addEventListener('keydown', e => { if (e.key === 'Enter') authPassword.focus(); });
 
-// ─── Sidebar toggle ───────────────────────────────────────────────────────────
+// ─── Sidebar ──────────────────────────────────────────────────────────────────
 
-sidebarToggle.addEventListener('click', () => {
-    sidebar.classList.toggle('collapsed');
-});
+sidebarToggle.addEventListener('click', () => sidebar.classList.toggle('collapsed'));
 
 // ─── Conversations ────────────────────────────────────────────────────────────
 
@@ -173,9 +161,7 @@ async function loadConversations() {
         return;
     }
 
-    for (const conv of conversations) {
-        appendConversationItem(conv);
-    }
+    for (const conv of conversations) appendConversationItem(conv);
 
     if (!currentThreadId && conversations.length > 0) {
         selectConversation(conversations[0].thread_id, conversations[0].title);
@@ -233,7 +219,6 @@ async function selectConversation(threadId, title) {
             div.className = `message ${msg.role}`;
 
             if (msg.parts) {
-                // Multi-part message (text + image)
                 for (const part of msg.parts) {
                     if (part.type === 'text') {
                         if (msg.role === 'assistant') {
@@ -255,7 +240,18 @@ async function selectConversation(threadId, title) {
                         const img = document.createElement('img');
                         img.src = part.url;
                         img.className = 'message-thumb';
-                        div.appendChild(img);
+                        imgGrid.appendChild(img);
+                    } else if (part.type === 'video') {
+                        let filesDiv = div.querySelector('.message-files');
+                        if (!filesDiv) {
+                            filesDiv = document.createElement('div');
+                            filesDiv.className = 'message-files';
+                            div.appendChild(filesDiv);
+                        }
+                        const chip = document.createElement('span');
+                        chip.className = 'message-file-chip';
+                        chip.textContent = `🎬 ${part.filename} (${part.frame_count} frames)`;
+                        filesDiv.appendChild(chip);
                     } else if (part.type === 'file') {
                         let filesDiv = div.querySelector('.message-files');
                         if (!filesDiv) {
@@ -275,7 +271,6 @@ async function selectConversation(threadId, title) {
                     }
                 }
             } else {
-                // Plain text message
                 if (msg.role === 'assistant') {
                     div.innerHTML = marked.parse(msg.content);
                 } else {
@@ -305,7 +300,6 @@ async function createNewConversation() {
     });
     const conv = await res.json();
 
-    // Remove "no conversations" placeholder if present
     const placeholder = conversationList.querySelector('.no-convs');
     if (placeholder) placeholder.remove();
 
@@ -356,10 +350,18 @@ imageInput.addEventListener('change', async function(e) {
                 renderImageChip(dataUrl, currentImages.length - 1);
             };
             reader.readAsDataURL(file);
+        } else if (file.type.startsWith('video/')) {
+            if (currentVideo) {
+                alert('Only one video per message.');
+                continue;
+            }
+            renderVideoChip(file.name, 'Extracting frames...');
+            const frames = await extractFrames(file);
+            currentVideo = { name: file.name, frames };
+            updateVideoChip(file.name, `${frames.length} frames`);
         } else if (file.name.endsWith('.zip')) {
             await handleZipFile(file);
         } else {
-            // Handle as code file
             const text = await file.text();
             const ext = file.name.split('.').pop().toLowerCase();
             const lang = LANG_MAP[ext] || ext;
@@ -368,7 +370,6 @@ imageInput.addEventListener('change', async function(e) {
         }
     }
 
-    // Reset input so the same file can be re-selected if removed
     imageInput.value = '';
 });
 
@@ -392,7 +393,9 @@ function renderFileChip(name, index) {
     remove.addEventListener('click', () => {
         currentFiles.splice(index, 1);
         chip.remove();
-        if (currentFiles.length === 0) fileChipsContainer.classList.remove('show');
+        if (currentFiles.length === 0 && currentImages.length === 0 && !currentVideo) {
+            fileChipsContainer.classList.remove('show');
+        }
     });
 
     chip.appendChild(icon);
@@ -417,7 +420,7 @@ function renderImageChip(dataUrl, index) {
     remove.addEventListener('click', () => {
         currentImages.splice(index, 1);
         chip.remove();
-        if (currentImages.length === 0 && currentFiles.length === 0) {
+        if (currentImages.length === 0 && currentFiles.length === 0 && !currentVideo) {
             fileChipsContainer.classList.remove('show');
         }
     });
@@ -428,9 +431,98 @@ function renderImageChip(dataUrl, index) {
     fileChipsContainer.classList.add('show');
 }
 
+function renderVideoChip(name, subtitle) {
+    const chip = document.createElement('div');
+    chip.className = 'file-chip video-chip';
+    chip.id = 'videoChip';
+
+    const icon = document.createElement('span');
+    icon.className = 'file-chip-icon';
+    icon.textContent = '🎬';
+
+    const info = document.createElement('div');
+    info.className = 'video-chip-info';
+
+    const label = document.createElement('span');
+    label.className = 'file-chip-name';
+    label.textContent = name;
+    label.title = name;
+
+    const sub = document.createElement('span');
+    sub.className = 'video-chip-sub';
+    sub.id = 'videoChipSub';
+    sub.textContent = subtitle;
+
+    info.appendChild(label);
+    info.appendChild(sub);
+
+    const remove = document.createElement('button');
+    remove.className = 'file-chip-remove';
+    remove.textContent = '×';
+    remove.addEventListener('click', () => {
+        currentVideo = null;
+        chip.remove();
+        if (currentImages.length === 0 && currentFiles.length === 0) {
+            fileChipsContainer.classList.remove('show');
+        }
+    });
+
+    chip.appendChild(icon);
+    chip.appendChild(info);
+    chip.appendChild(remove);
+    fileChipsContainer.appendChild(chip);
+    fileChipsContainer.classList.add('show');
+}
+
+function updateVideoChip(name, subtitle) {
+    const sub = document.getElementById('videoChipSub');
+    if (sub) sub.textContent = subtitle;
+}
+
+async function extractFrames(file, fps = 2, maxDuration = 10, width = 640, height = 360) {
+    return new Promise((resolve) => {
+        const video = document.createElement('video');
+        video.src = URL.createObjectURL(file);
+        video.muted = true;
+
+        video.addEventListener('loadedmetadata', async () => {
+            const duration = Math.min(video.duration, maxDuration);
+            const interval = 1 / fps;
+            const timestamps = [];
+
+            for (let t = 0; t < duration; t += interval) {
+                timestamps.push(parseFloat(t.toFixed(3)));
+            }
+
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+
+            const frames = [];
+
+            for (const t of timestamps) {
+                await new Promise(res => {
+                    video.currentTime = t;
+                    video.addEventListener('seeked', function onSeeked() {
+                        video.removeEventListener('seeked', onSeeked);
+                        ctx.drawImage(video, 0, 0, width, height);
+                        frames.push(canvas.toDataURL('image/jpeg', 0.75));
+                        res();
+                    });
+                });
+            }
+
+            URL.revokeObjectURL(video.src);
+            resolve(frames);
+        });
+    });
+}
+
 function clearFiles() {
     currentImages = [];
     currentFiles = [];
+    currentVideo = null;
     fileChipsContainer.innerHTML = '';
     fileChipsContainer.classList.remove('show');
 }
@@ -443,7 +535,6 @@ async function handleZipFile(file) {
         if (!entry.dir) entries.push({ path: relativePath, entry });
     });
 
-    // Filter out unwanted files
     const skip = (path) =>
         path.includes('__pycache__') ||
         path.includes('node_modules') ||
@@ -452,11 +543,8 @@ async function handleZipFile(file) {
         path.endsWith('.DS_Store');
 
     const filtered = entries.filter(e => !skip(e.path));
-
-    // Build tree summary
     const tree = buildFileTree(filtered.map(e => e.path));
 
-    // Read each file's content
     const files = [];
     for (const { path, entry } of filtered) {
         try {
@@ -465,11 +553,10 @@ async function handleZipFile(file) {
             const lang = LANG_MAP[ext] || ext;
             files.push({ name: path, lang, content });
         } catch {
-            // skip binary files that can't be read as string
+            // skip binary files
         }
     }
 
-    // Prepend tree as a special entry
     files.unshift({
         name: `${file.name} — file tree`,
         lang: 'text',
@@ -477,11 +564,7 @@ async function handleZipFile(file) {
         isTree: true
     });
 
-    currentFiles.push({
-    name: file.name,
-    isZip: true,
-    files: files  // all files including the tree entry
-    });
+    currentFiles.push({ name: file.name, isZip: true, files });
     renderFileChip(file.name, currentFiles.length - 1);
 }
 
@@ -517,14 +600,14 @@ messageInput.addEventListener('keydown', function(e) {
 
 async function sendMessage() {
     const message = messageInput.value.trim();
-    if (!message && currentImages.length === 0 && currentFiles.length === 0) return;
+    if (!message && currentImages.length === 0 && currentFiles.length === 0 && !currentVideo) return;
 
     if (!currentThreadId) await createNewConversation();
 
     sendButton.disabled = true;
     messageInput.disabled = true;
 
-    // Build full message: user text + appended code files
+    // Build full message text including code file blocks
     let fullMessage = message;
     if (currentFiles.length > 0) {
         const codeBlocks = currentFiles.map(f => {
@@ -538,6 +621,7 @@ async function sendMessage() {
         fullMessage = message ? `${message}\n\n${codeBlocks}` : codeBlocks;
     }
 
+    // Build user message bubble
     const userMessageDiv = document.createElement('div');
     userMessageDiv.className = 'message user';
 
@@ -547,7 +631,6 @@ async function sendMessage() {
         userMessageDiv.appendChild(textSpan);
     }
 
-    // Show file chips in the message bubble
     if (currentFiles.length > 0) {
         const filesDiv = document.createElement('div');
         filesDiv.className = 'message-files';
@@ -566,7 +649,6 @@ async function sendMessage() {
         userMessageDiv.appendChild(filesDiv);
     }
 
-    // Show image thumbnails in message bubble
     if (currentImages.length > 0) {
         const imgGrid = document.createElement('div');
         imgGrid.className = 'message-image-grid';
@@ -577,6 +659,16 @@ async function sendMessage() {
             imgGrid.appendChild(img);
         }
         userMessageDiv.appendChild(imgGrid);
+    }
+
+    if (currentVideo) {
+        const filesDiv = document.createElement('div');
+        filesDiv.className = 'message-files';
+        const chip = document.createElement('span');
+        chip.className = 'message-file-chip';
+        chip.textContent = `🎬 ${currentVideo.name} (${currentVideo.frames.length} frames)`;
+        filesDiv.appendChild(chip);
+        userMessageDiv.appendChild(filesDiv);
     }
 
     messagesDiv.appendChild(userMessageDiv);
@@ -594,7 +686,14 @@ async function sendMessage() {
         const response = await apiFetch('/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: fullMessage, thread_id: currentThreadId, images: currentImages })
+            body: JSON.stringify({
+                message: fullMessage,
+                thread_id: currentThreadId,
+                images: currentImages,
+                video_frames: currentVideo ? currentVideo.frames : null,
+                video_filename: currentVideo ? currentVideo.name : null,
+                video_frame_count: currentVideo ? currentVideo.frames.length : null
+            })
         });
 
         typingDiv.remove();
@@ -637,7 +736,6 @@ async function sendMessage() {
 
     clearFiles();
     imageInput.value = '';
-    clearFiles();
     sendButton.disabled = false;
     messageInput.disabled = false;
     messageInput.focus();
@@ -669,6 +767,8 @@ async function downloadZip(f) {
     a.click();
     URL.revokeObjectURL(url);
 }
+
+// ─── Marked code block renderer ───────────────────────────────────────────────
 
 const renderer = new marked.Renderer();
 renderer.code = function({ text, lang }) {
