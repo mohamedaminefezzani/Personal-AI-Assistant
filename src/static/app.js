@@ -479,7 +479,7 @@ function updateVideoChip(name, subtitle) {
     if (sub) sub.textContent = subtitle;
 }
 
-async function extractFrames(file, fps = 2, maxDuration = 10, width = 640, height = 360) {
+async function extractFrames(file, fps = 10, maxDuration = 10, width = 640, height = 360) {
     return new Promise((resolve) => {
         const video = document.createElement('video');
         video.src = URL.createObjectURL(file);
