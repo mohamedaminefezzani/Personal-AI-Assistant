@@ -26,7 +26,6 @@ async def close_pool():
 
 async def init_db(pool: AsyncConnectionPool):
     async with pool.connection() as conn:
-        await conn.execute("BEGIN")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -58,7 +57,7 @@ async def init_db(pool: AsyncConnectionPool):
                 message_index INT NOT NULL,  -- position in conversation
                 filename TEXT NOT NULL,
                 frame_count INT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW()
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE (thread_id, message_index)
             )
         """)
-        await conn.execute("COMMIT")
