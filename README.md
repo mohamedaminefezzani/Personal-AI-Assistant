@@ -40,6 +40,7 @@ Root
      |─── db
           |─── db.py           # Postgres pool + schema init
      |─── llm
+          |─── context.py
           |─── graph.py        # LangGraph multi-agent graph
           |─── init_llm.py     # Ollama LLM wrapper
           |─── tools.py        # search, file, code tools
