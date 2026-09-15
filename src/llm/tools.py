@@ -8,6 +8,9 @@ import textwrap
 from langchain.tools import tool
 from langchain_tavily import TavilySearch
 
+from dotenv import load_dotenv
+load_dotenv()  # loads .env from the current working directory
+
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 tavily_api = os.getenv("TAVILY_API_KEY")

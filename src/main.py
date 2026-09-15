@@ -24,6 +24,8 @@ from langfuse import Langfuse, get_client
 from langfuse.langchain import CallbackHandler
 
 import os
+from dotenv import load_dotenv
+load_dotenv()  # loads .env from the current working directory
 
 # ─── JWT config ───────────────────────────────────────────────────────────────
 

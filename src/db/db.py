@@ -1,6 +1,9 @@
 from psycopg_pool import AsyncConnectionPool
 
 import os
+from dotenv import load_dotenv
+
+load_dotenv()  # loads .env from the current working directory
 
 _pool: AsyncConnectionPool | None = None
 
