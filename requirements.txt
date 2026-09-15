@@ -2,13 +2,13 @@ langchain==1.2.15
 langchain-ollama==1.1.0
 langchain-tavily==0.2.17
 langgraph==1.1.6
-langfuse # observability
+langfuse           # observability
 pillow==12.2.0
-grandalf==0.8 # draw graphs
-rich==15.0.0 # markdown rendering in terminal
+grandalf==0.8      # draw graphs
+rich==15.0.0       # markdown rendering in terminal
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
-python-multipart==0.0.12 # for form data handling
+python-multipart==0.0.12
 deepagents==0.5.3
 psycopg[binary,pool]
 langgraph-checkpoint-postgres

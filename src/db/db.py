@@ -2,8 +2,6 @@ from psycopg_pool import AsyncConnectionPool
 
 import os
 
-print(os.getenv("DATABASE_URL"))
-
 _pool: AsyncConnectionPool | None = None
 
 async def get_pool() -> AsyncConnectionPool:
@@ -14,6 +12,8 @@ async def get_pool() -> AsyncConnectionPool:
             max_size=20,
             kwargs={"autocommit": True},
             open=False,
+            max_idle=300,
+            reconnect_timeout=30,
         )
         await _pool.open()
     return _pool
@@ -54,10 +54,50 @@ async def init_db(pool: AsyncConnectionPool):
             CREATE TABLE IF NOT EXISTS message_videos (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 thread_id TEXT NOT NULL,
-                message_index INT NOT NULL,  -- position in conversation
+                message_index INT NOT NULL,
                 filename TEXT NOT NULL,
                 frame_count INT NOT NULL,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 UNIQUE (thread_id, message_index)
             )
+        """)
+        # Long-term memory: key/value facts per user
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_memory (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE (user_id, key)
+            )
+        """)
+        # Rolling conversation summaries (one per thread)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_summaries (
+                thread_id  TEXT PRIMARY KEY,
+                summary    TEXT NOT NULL,
+                up_to_msg  INT  NOT NULL DEFAULT 0,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+
+async def init_task_runs(pool: AsyncConnectionPool):
+    """Create the task_runs table if it doesn't exist. Called at startup."""
+    async with pool.connection() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS task_runs (
+                task_id     TEXT PRIMARY KEY,
+                thread_id   TEXT NOT NULL,
+                user_id     UUID NOT NULL,
+                status      TEXT NOT NULL DEFAULT 'running',
+                output      TEXT,
+                error       TEXT,
+                created_at  TIMESTAMPTZ DEFAULT NOW(),
+                updated_at  TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS task_runs_thread_id_idx
+            ON task_runs (thread_id)
         """)

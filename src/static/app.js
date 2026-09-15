@@ -17,9 +17,10 @@ const newChatBtn       = document.getElementById('newChatBtn');
 const sidebarToggle    = document.getElementById('sidebarToggle');
 const sidebar          = document.getElementById('sidebar');
 
-let currentImages   = []; // up to 5 images
-let currentFiles    = []; // code files / zips
-let currentVideo    = null; // { name, frames[] }
+let currentImages   = [];
+let currentFiles    = [];
+let currentVideo    = null;
+let useCodingAgent  = false;
 let currentThreadId = null;
 let currentTab      = 'login';
 
@@ -37,7 +38,7 @@ function switchTab(tab) {
     currentTab = tab;
     document.getElementById('loginTab').classList.toggle('active', tab === 'login');
     document.getElementById('registerTab').classList.toggle('active', tab === 'register');
-    authSubmit.textContent = tab === 'login' ? 'Login' : 'Register';
+    authSubmit.textContent = tab === 'login' ? 'Sign in' : 'Register';
     authError.textContent = '';
 }
 
@@ -67,7 +68,7 @@ async function submitAuth() {
 
         if (currentTab === 'register') {
             authError.style.color = '#4caf50';
-            authError.textContent = 'Account created! Logging in...';
+            authError.textContent = 'Account created! Signing in...';
             currentTab = 'login';
             await submitAuth();
             return;
@@ -95,7 +96,7 @@ function showAuth() {
     currentImages = [];
     clearFiles();
     conversationList.innerHTML = '';
-    messagesDiv.innerHTML = '<div class="message assistant">Hello! I\'m your personal AI assistant. How can I help you today?</div>';
+    messagesDiv.innerHTML = '<div class="message assistant">Ready. What are we working on?</div>';
     imageInput.value = '';
     messageInput.value = '';
 }
@@ -181,8 +182,8 @@ function appendConversationItem(conv) {
 
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'conv-delete';
-    deleteBtn.textContent = '🗑';
-    deleteBtn.title = 'Delete conversation';
+    deleteBtn.textContent = '✕';
+    deleteBtn.title = 'Delete';
     deleteBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         await deleteConversation(conv.thread_id);
@@ -195,13 +196,16 @@ function appendConversationItem(conv) {
 }
 
 async function selectConversation(threadId, title) {
+    if (currentThreadId && currentThreadId !== threadId) {
+        _cancelActiveStream(currentThreadId);
+    }
     currentThreadId = threadId;
 
     document.querySelectorAll('.conv-item').forEach(el => {
         el.classList.toggle('active', el.dataset.threadId === threadId);
     });
 
-    messagesDiv.innerHTML = `<div class="message assistant">Loading...</div>`;
+    messagesDiv.innerHTML = `<div class="message assistant">Loading…</div>`;
 
     try {
         const res = await apiFetch(`/conversations/${threadId}/messages`);
@@ -210,7 +214,7 @@ async function selectConversation(threadId, title) {
         messagesDiv.innerHTML = '';
 
         if (messages.length === 0) {
-            messagesDiv.innerHTML = `<div class="message assistant">Conversation: <strong>${title}</strong>. What's on your mind?</div>`;
+            messagesDiv.innerHTML = `<div class="message assistant">Ready. What are we working on?</div>`;
             return;
         }
 
@@ -264,7 +268,6 @@ async function selectConversation(threadId, title) {
                         chip.textContent = `📄 ${part.name}`;
                         if (part.content) {
                             chip.title = 'Click to download';
-                            chip.style.cursor = 'pointer';
                             chip.addEventListener('click', () => downloadFile(part.name, part.content));
                         }
                         filesDiv.appendChild(chip);
@@ -284,6 +287,9 @@ async function selectConversation(threadId, title) {
         }
 
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+        // If a generation is still running on this thread, reconnect to it
+        await maybeReconnectStream(threadId);
     } catch (e) {
         if (e.message !== 'Session expired') {
             messagesDiv.innerHTML = `<div class="message assistant">Failed to load messages.</div>`;
@@ -317,7 +323,7 @@ async function deleteConversation(threadId) {
 
     if (currentThreadId === threadId) {
         currentThreadId = null;
-        messagesDiv.innerHTML = '<div class="message assistant">Select or create a conversation to get started.</div>';
+        messagesDiv.innerHTML = '<div class="message assistant">Select or start a conversation.</div>';
         const first = conversationList.querySelector('.conv-item');
         if (first) first.click();
     }
@@ -339,10 +345,7 @@ imageInput.addEventListener('change', async function(e) {
 
     for (const file of files) {
         if (file.type.startsWith('image/')) {
-            if (currentImages.length >= 5) {
-                alert('Maximum 5 images per message.');
-                continue;
-            }
+            if (currentImages.length >= 5) { alert('Maximum 5 images per message.'); continue; }
             const reader = new FileReader();
             reader.onload = function(e) {
                 const dataUrl = e.target.result;
@@ -351,11 +354,8 @@ imageInput.addEventListener('change', async function(e) {
             };
             reader.readAsDataURL(file);
         } else if (file.type.startsWith('video/')) {
-            if (currentVideo) {
-                alert('Only one video per message.');
-                continue;
-            }
-            renderVideoChip(file.name, 'Extracting frames...');
+            if (currentVideo) { alert('Only one video per message.'); continue; }
+            renderVideoChip(file.name, 'Extracting frames…');
             const frames = await extractFrames(file);
             currentVideo = { name: file.name, frames };
             updateVideoChip(file.name, `${frames.length} frames`);
@@ -393,9 +393,8 @@ function renderFileChip(name, index) {
     remove.addEventListener('click', () => {
         currentFiles.splice(index, 1);
         chip.remove();
-        if (currentFiles.length === 0 && currentImages.length === 0 && !currentVideo) {
+        if (currentFiles.length === 0 && currentImages.length === 0 && !currentVideo)
             fileChipsContainer.classList.remove('show');
-        }
     });
 
     chip.appendChild(icon);
@@ -420,9 +419,8 @@ function renderImageChip(dataUrl, index) {
     remove.addEventListener('click', () => {
         currentImages.splice(index, 1);
         chip.remove();
-        if (currentImages.length === 0 && currentFiles.length === 0 && !currentVideo) {
+        if (currentImages.length === 0 && currentFiles.length === 0 && !currentVideo)
             fileChipsContainer.classList.remove('show');
-        }
     });
 
     chip.appendChild(thumb);
@@ -462,9 +460,8 @@ function renderVideoChip(name, subtitle) {
     remove.addEventListener('click', () => {
         currentVideo = null;
         chip.remove();
-        if (currentImages.length === 0 && currentFiles.length === 0) {
+        if (currentImages.length === 0 && currentFiles.length === 0)
             fileChipsContainer.classList.remove('show');
-        }
     });
 
     chip.appendChild(icon);
@@ -489,16 +486,13 @@ async function extractFrames(file, fps = 10, maxDuration = 10, width = 640, heig
             const duration = Math.min(video.duration, maxDuration);
             const interval = 1 / fps;
             const timestamps = [];
-
-            for (let t = 0; t < duration; t += interval) {
+            for (let t = 0; t < duration; t += interval)
                 timestamps.push(parseFloat(t.toFixed(3)));
-            }
 
             const canvas = document.createElement('canvas');
             canvas.width = width;
             canvas.height = height;
             const ctx = canvas.getContext('2d');
-
             const frames = [];
 
             for (const t of timestamps) {
@@ -529,41 +523,29 @@ function clearFiles() {
 
 async function handleZipFile(file) {
     const zip = await JSZip.loadAsync(file);
-
     const entries = [];
     zip.forEach((relativePath, entry) => {
         if (!entry.dir) entries.push({ path: relativePath, entry });
     });
 
     const skip = (path) =>
-        path.includes('__pycache__') ||
-        path.includes('node_modules') ||
-        path.includes('.git') ||
-        path.endsWith('.pyc') ||
-        path.endsWith('.DS_Store');
+        path.includes('__pycache__') || path.includes('node_modules') ||
+        path.includes('.git') || path.endsWith('.pyc') || path.endsWith('.DS_Store');
 
     const filtered = entries.filter(e => !skip(e.path));
     const tree = buildFileTree(filtered.map(e => e.path));
-
     const files = [];
+
     for (const { path, entry } of filtered) {
         try {
             const content = await entry.async('string');
             const ext = path.split('.').pop().toLowerCase();
             const lang = LANG_MAP[ext] || ext;
             files.push({ name: path, lang, content });
-        } catch {
-            // skip binary files
-        }
+        } catch { /* skip binary */ }
     }
 
-    files.unshift({
-        name: `${file.name} — file tree`,
-        lang: 'text',
-        content: tree,
-        isTree: true
-    });
-
+    files.unshift({ name: `${file.name} — file tree`, lang: 'text', content: tree, isTree: true });
     currentFiles.push({ name: file.name, isZip: true, files });
     renderFileChip(file.name, currentFiles.length - 1);
 }
@@ -571,14 +553,11 @@ async function handleZipFile(file) {
 function buildFileTree(paths) {
     const lines = [`📦 ${paths.length} files\n`];
     const sorted = [...paths].sort();
-
     for (const path of sorted) {
         const parts = path.split('/');
         const depth = parts.length - 1;
-        const indent = '  '.repeat(depth);
-        lines.push(`${indent}📄 ${parts[parts.length - 1]}`);
+        lines.push(`${'  '.repeat(depth)}📄 ${parts[parts.length - 1]}`);
     }
-
     return lines.join('\n');
 }
 
@@ -598,16 +577,138 @@ messageInput.addEventListener('keydown', function(e) {
 
 // ─── Send message ─────────────────────────────────────────────────────────────
 
+// ─── Active stream tracking ───────────────────────────────────────────────────
+// Keyed by thread_id so switching conversations cancels the previous reader.
+
+const _activeReaders = {};   // thread_id -> ReadableStreamDefaultReader
+
+function _cancelActiveStream(threadId) {
+    if (_activeReaders[threadId]) {
+        try { _activeReaders[threadId].cancel(); } catch (_) {}
+        delete _activeReaders[threadId];
+    }
+}
+
+// ─── Thinking state ───────────────────────────────────────────────────────────
+
+function setThinking(on) {
+    sendButton.disabled = on;
+    messageInput.disabled = on;
+    if (on) {
+        sendButton.classList.add('thinking');
+        sendButton.textContent = '…';
+    } else {
+        sendButton.classList.remove('thinking');
+        sendButton.textContent = 'Send';
+    }
+}
+
+// ─── Core stream consumer ─────────────────────────────────────────────────────
+// Reads SSE from /chat/stream/{taskId} and populates typingDiv + assistantDiv.
+// Works for both new messages and reconnects.
+
+async function consumeStream(taskId, threadId, typingDiv, assistantMessageDiv) {
+    const response = await apiFetch(`/chat/stream/${taskId}`);
+    const reader   = response.body.getReader();
+    const decoder  = new TextDecoder();
+
+    _activeReaders[threadId] = reader;
+
+    let fullText     = '';
+    let typingRemoved = false;
+    let buffer       = '';
+
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // keep incomplete last line
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                let data;
+                try { data = JSON.parse(line.slice(6)); } catch { continue; }
+
+                if (data.error) {
+                    if (!typingRemoved) {
+                        typingDiv.remove();
+                        assistantMessageDiv.style.display = '';
+                        typingRemoved = true;
+                    }
+                    assistantMessageDiv.textContent = 'Error: ' + data.error;
+                } else if (data.content) {
+                    if (!typingRemoved) {
+                        typingDiv.remove();
+                        assistantMessageDiv.style.display = '';
+                        typingRemoved = true;
+                    }
+                    fullText = data.content; // server sends full output once
+                    assistantMessageDiv.innerHTML = marked.parse(fullText);
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                }
+            }
+        }
+    } finally {
+        delete _activeReaders[threadId];
+        // Ensure typing indicator is gone even on abort
+        if (!typingRemoved) {
+            typingDiv.remove();
+            assistantMessageDiv.style.display = '';
+        }
+    }
+}
+
+// ─── Reconnect to in-progress stream on conversation switch ───────────────────
+
+async function maybeReconnectStream(threadId) {
+    const res  = await apiFetch(`/chat/status/${threadId}`);
+    const data = await res.json();
+
+    if (data.status !== 'running') return; // nothing to reconnect to
+
+    setThinking(true);
+
+    // Append typing + placeholder assistant bubble below existing messages
+    const typingDiv = document.createElement('div');
+    typingDiv.className = 'typing-indicator show';
+    typingDiv.innerHTML = '<span></span><span></span><span></span>';
+    messagesDiv.appendChild(typingDiv);
+
+    const assistantMessageDiv = document.createElement('div');
+    assistantMessageDiv.className = 'message assistant';
+    assistantMessageDiv.style.display = 'none';
+    messagesDiv.appendChild(assistantMessageDiv);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+    try {
+        await consumeStream(data.task_id, threadId, typingDiv, assistantMessageDiv);
+    } catch (e) {
+        if (e.message !== 'Session expired') {
+            assistantMessageDiv.style.display = '';
+            assistantMessageDiv.textContent = 'Error: ' + e.message;
+        }
+    } finally {
+        setThinking(false);
+    }
+}
+
+// ─── Send message ─────────────────────────────────────────────────────────────
+
 async function sendMessage() {
     const message = messageInput.value.trim();
     if (!message && currentImages.length === 0 && currentFiles.length === 0 && !currentVideo) return;
 
     if (!currentThreadId) await createNewConversation();
 
-    sendButton.disabled = true;
-    messageInput.disabled = true;
+    // Cancel any stream still running on this thread
+    _cancelActiveStream(currentThreadId);
 
-    // Build full message text including code file blocks
+    setThinking(true);
+
+    // Build full message text with file blocks
     let fullMessage = message;
     if (currentFiles.length > 0) {
         const codeBlocks = currentFiles.map(f => {
@@ -621,7 +722,7 @@ async function sendMessage() {
         fullMessage = message ? `${message}\n\n${codeBlocks}` : codeBlocks;
     }
 
-    // Build user message bubble
+    // ── User bubble ────────────────────────────────────────────────────────────
     const userMessageDiv = document.createElement('div');
     userMessageDiv.className = 'message user';
 
@@ -639,11 +740,8 @@ async function sendMessage() {
             chip.className = 'message-file-chip';
             chip.textContent = `📄 ${f.name}`;
             chip.title = f.isZip ? `${f.files.length} files` : 'Click to download';
-            if (f.isZip) {
-                chip.addEventListener('click', () => downloadZip(f));
-            } else {
-                chip.addEventListener('click', () => downloadFile(f.name, f.content));
-            }
+            if (f.isZip) chip.addEventListener('click', () => downloadZip(f));
+            else chip.addEventListener('click', () => downloadFile(f.name, f.content));
             filesDiv.appendChild(chip);
         }
         userMessageDiv.appendChild(filesDiv);
@@ -673,71 +771,56 @@ async function sendMessage() {
 
     messagesDiv.appendChild(userMessageDiv);
 
+    // ── Typing indicator ───────────────────────────────────────────────────────
     const typingDiv = document.createElement('div');
     typingDiv.className = 'typing-indicator show';
-    typingDiv.innerHTML = '<span>.</span><span>.</span><span>.</span>';
+    typingDiv.innerHTML = '<span></span><span></span><span></span>';
     messagesDiv.appendChild(typingDiv);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
     messageInput.value = '';
     messageInput.style.height = 'auto';
 
+    // ── Assistant bubble — hidden until first chunk ────────────────────────────
+    const assistantMessageDiv = document.createElement('div');
+    assistantMessageDiv.className = 'message assistant';
+    assistantMessageDiv.style.display = 'none';
+    messagesDiv.appendChild(assistantMessageDiv);
+
+    const capturedThreadId = currentThreadId;
+
     try {
-        const response = await apiFetch('/chat', {
+        // Step 1: fire-and-forget POST → get task_id immediately
+        const res = await apiFetch('/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 message: fullMessage,
-                thread_id: currentThreadId,
+                thread_id: capturedThreadId,
                 images: currentImages,
                 video_frames: currentVideo ? currentVideo.frames : null,
                 video_filename: currentVideo ? currentVideo.name : null,
-                video_frame_count: currentVideo ? currentVideo.frames.length : null
+                video_frame_count: currentVideo ? currentVideo.frames.length : null,
+                use_coding_agent: useCodingAgent
             })
         });
 
-        typingDiv.remove();
+        const { task_id } = await res.json();
 
-        const assistantMessageDiv = document.createElement('div');
-        assistantMessageDiv.className = 'message assistant';
-        messagesDiv.appendChild(assistantMessageDiv);
+        // Step 2: open SSE stream for this task
+        await consumeStream(task_id, capturedThreadId, typingDiv, assistantMessageDiv);
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let fullText = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            const chunk = decoder.decode(value);
-            for (const line of chunk.split('\n')) {
-                if (line.startsWith('data: ')) {
-                    const data = JSON.parse(line.slice(6));
-                    if (data.error) {
-                        assistantMessageDiv.textContent = 'Error: ' + data.error;
-                    } else if (data.content) {
-                        fullText += data.content;
-                        assistantMessageDiv.innerHTML = marked.parse(fullText);
-                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
-                    }
-                }
-            }
-        }
     } catch (error) {
         typingDiv.remove();
+        assistantMessageDiv.style.display = '';
         if (error.message !== 'Session expired') {
-            const errorDiv = document.createElement('div');
-            errorDiv.className = 'message assistant';
-            errorDiv.textContent = 'Error: ' + error.message;
-            messagesDiv.appendChild(errorDiv);
+            assistantMessageDiv.textContent = 'Error: ' + error.message;
         }
     }
 
     clearFiles();
     imageInput.value = '';
-    sendButton.disabled = false;
-    messageInput.disabled = false;
+    setThinking(false);
     messageInput.focus();
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
@@ -768,7 +851,7 @@ async function downloadZip(f) {
     URL.revokeObjectURL(url);
 }
 
-// ─── Marked code block renderer ───────────────────────────────────────────────
+// ─── Marked: code block with copy button ─────────────────────────────────────
 
 const renderer = new marked.Renderer();
 renderer.code = function({ text, lang }) {
@@ -791,6 +874,20 @@ messagesDiv.addEventListener('click', function(e) {
         });
     }
 });
+
+// ─── Coding agent toggle ──────────────────────────────────────────────────────
+
+function toggleCodeMode() {
+    useCodingAgent = !useCodingAgent;
+    const btn = document.getElementById('codeToggle');
+    if (useCodingAgent) {
+        btn.classList.add('active');
+        btn.title = 'Coding agent active — click to switch back';
+    } else {
+        btn.classList.remove('active');
+        btn.title = 'Use coding agent';
+    }
+}
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 

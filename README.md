@@ -1,54 +1,120 @@
 # Personal-AI-Assistant
 
-This is an ongoing personal project to build my own local agent. I have yet to set on its goal but I'm experimenting as I go through.
-Still in its early phases, this repo provides the basic foundation of the agent in the style of a multi-turn conversational chatbot.
+An ongoing personal project to build a local multi-agent AI assistant. Runs entirely on your machine via Ollama.
 
-# Technical Details
+---
 
-The agent is powered by Mistral's recent LLM, **Ministral 3 3b**. It is capable of processing images, handling different languages, as well as calling tools.
-Currently, only web search is implemented. Chat memory is checkpointed in a Postgres database
+## Agents
 
-# Current Project Structure (needs more organizing)
+| Agent | Model | Trigger | Tools |
+|---|---|---|---|
+| **main_agent** | Ministral 3 14b | Default for all text messages | Web search, read/write files, run code |
+| **coding_agent** | CodeLlama 7b | 💻 button in the UI | Read/write files, run code (write → run → fix loop) |
+| **video_agent** | Ministral 3 3b | Video file upload | None (vision only) |
 
-```Root
+---
+
+## Features
+
+- 🔍 **Web search** via Tavily
+- 📁 **File read/write** — the assistant can save and read files in `~/assistant_files/`
+- ⚙️ **Code execution** — runs Python, JavaScript, or Bash snippets and reports output
+- 🎬 **Video analysis** — upload a video; the agent describes it from extracted frames
+- 🧠 **Long-term memory** — key/value facts stored in Postgres, injected into every prompt
+- 💬 **Multi-turn conversations** — checkpointed in Postgres, switchable from the sidebar
+- 🔐 **JWT auth** — register/login with HTTP-only cookies
+- 📊 **LLM observability** — traces in Langfuse
+
+---
+
+## Project Structure
+
+```
+Root
 |─── requirements.txt
-|─── venv
+|─── README.md
 |─── src
      |─── .env.example
-     |─── create_agents.py
-     |─── main.py
+     |─── create_agents.py     # agent definitions
+     |─── main.py              # FastAPI app
      |─── db
-          |─── db.py
+          |─── db.py           # Postgres pool + schema init
      |─── llm
-          |─── graph.py
-          |─── init_llm.py
-          |─── tools.py
+          |─── graph.py        # LangGraph multi-agent graph
+          |─── init_llm.py     # Ollama LLM wrapper
+          |─── tools.py        # search, file, code tools
      |─── static
           |─── app.js
           |─── index.html
           |─── style.css
 ```
 
-# Requirements
+---
 
-- Python 3.12 (the project runs on Python 3.12.10)
-- Postgres connection string (I'm currently using a Neon Serverless Postgres instance for testing) stored in a `.env` file as `DATABASE_URL=conn_string` (replace `conn_string` with your connection string)
-- Ollama running, Ministral 3 and codellama weights (`ollama pull ministral-3:3b`, `ollama pull codellama:7b`)
-- Tavily API key **set as an environment variable** (for web search calls)
-- JWT secret, you can generate one by running the following command: `openssl rand -hex 32`
+## Requirements
 
-# Getting Started
+- Python 3.12
+- Postgres (e.g. [Neon](https://neon.tech) serverless, or local)
+- Ollama running locally with these models pulled:
+  - `ollama pull ministral-3:3b`
+  - `ollama pull ministral-3:14b`
+  - `ollama pull codellama:7b`
+- Tavily API key
+- Langfuse account (public + secret key)
+- JWT secret: `openssl rand -hex 32`
 
-1. Fork the repository
-2. Create a virtual environment.
-   - `python -m venv venv`
-   - `source venv/bin/activate` (for Linux) or `venv/Scripts/activate` (for Windows)
-   - `pip install -qr requirements.txt`
-3. Run *web_app.py*
-   - `python main.py`
-  
-Now, you can con converse.
+### `.env` file (in `src/`)
 
-**NOTE: Ollama must be running in the background. To do so, either:**
-- run `ollama serve` in a separate terminal if on Linux and if it doesn't initialize on boot.
-- open the app in background on Windows.
+```
+DATABASE_URL=<your_postgres_connection_string>
+JWT_SECRET=<your_jwt_secret>
+TAVILY_API_KEY=<your_tavily_key>
+LANGFUSE_PUBLIC_KEY=<your_langfuse_public_key>
+LANGFUSE_SECRET_KEY=<your_langfuse_secret_key>
+
+# Optional: where the assistant saves files (default: ~/assistant_files)
+FILES_BASE_DIR=~/assistant_files
+```
+
+---
+
+## Getting Started
+
+```bash
+# 1. Clone and set up venv
+python -m venv venv
+source venv/bin/activate       # Linux/macOS
+# venv\Scripts\activate        # Windows
+
+pip install -r requirements.txt
+
+# 2. Copy and fill in .env
+cp src/.env.example src/.env
+
+# 3. Make sure Ollama is running
+ollama serve   # if it doesn't start on boot
+
+# 4. Start the server
+cd src
+python main.py
+```
+
+Open http://localhost:8000 in your browser.
+
+---
+
+## Health Check
+
+`GET /health` — checks DB connectivity, Ollama reachability on port 11434, and Tavily key presence.
+
+---
+
+## Memory API
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/memory` | List all memory entries |
+| PUT | `/memory` | Upsert a `{ key, value }` entry |
+| DELETE | `/memory/{key}` | Delete an entry |
+
+Memory is automatically injected into every prompt so the assistant always knows what you've told it.
