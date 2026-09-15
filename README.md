@@ -9,7 +9,7 @@ An ongoing personal project to build a local multi-agent AI assistant. Runs enti
 | Agent | Model | Trigger | Tools |
 |---|---|---|---|
 | **main_agent** | Ministral 3 14b | Default for all text messages | Web search, read/write files, run code |
-| **coding_agent** | CodeLlama 7b | 💻 button in the UI | Read/write files, run code (write → run → fix loop) |
+| **coding_agent** | Ministral 3 8b | 💻 button in the UI | Read/write files, run code (write → run → fix loop) |
 | **video_agent** | Ministral 3 3b | Video file upload | None (vision only) |
 
 ---
