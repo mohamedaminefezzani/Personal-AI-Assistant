@@ -1,0 +1,9 @@
+{
+  "devDependencies": {
+    "@electric-sql/pglite": "0.3.14",
+    "jsdom": "26.1.0"
+  },
+  "scripts": {
+    "test": "node --test security.test.cjs database.test.cjs"
+  }
+}

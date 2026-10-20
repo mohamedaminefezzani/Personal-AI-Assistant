@@ -21,15 +21,15 @@
             <p class="auth-subtitle">Local · Private · Yours</p>
 
             <div class="auth-tabs">
-                <button class="auth-tab active" id="loginTab" onclick="switchTab('login')">Sign in</button>
-                <button class="auth-tab" id="registerTab" onclick="switchTab('register')">Register</button>
+                <button class="auth-tab active" id="loginTab">Sign in</button>
+                <button class="auth-tab" id="registerTab">Register</button>
             </div>
 
             <div class="auth-error" id="authError"></div>
 
             <input class="auth-input" type="text" id="authUsername" placeholder="Username" autocomplete="username" />
             <input class="auth-input" type="password" id="authPassword" placeholder="Password" autocomplete="current-password" />
-            <button class="auth-submit" id="authSubmit" onclick="submitAuth()">Sign in</button>
+            <button class="auth-submit" id="authSubmit">Sign in</button>
         </div>
     </div>
 
@@ -53,7 +53,7 @@
                 </div>
                 <div class="header-right">
                     <span class="header-username" id="headerUsername"></span>
-                    <button class="logout-btn" onclick="logout()">Sign out</button>
+                    <button class="logout-btn" id="logoutButton">Sign out</button>
                 </div>
             </div>
 
@@ -70,18 +70,19 @@
                         <input type="file" id="imageInput" class="image-input"
                             accept="image/*,video/mp4,video/webm,text/plain,text/x-python,text/javascript,text/html,text/css,.ts,.go,.rs,.java,.cpp,.c,.zip"
                             multiple>
-                        <button class="button image" onclick="document.getElementById('imageInput').click()" title="Attach file or image">📎</button>
-                        <button class="button code-toggle" id="codeToggle" onclick="toggleCodeMode()" title="Use coding agent">💻</button>
+                        <button class="button image" id="attachButton" title="Attach file or image">📎</button>
+                        <button class="button code-toggle" id="codeToggle" title="Use coding agent">💻</button>
                         <textarea id="messageInput" placeholder="Message…" rows="1"></textarea>
-                        <button class="button send" id="sendButton" onclick="sendMessage()">Send</button>
+                        <button class="button send" id="sendButton">Send</button>
                     </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="/static/vendor/marked-15.0.12.min.js"></script>
+    <script src="/static/vendor/jszip-3.10.1.min.js"></script>
+    <script src="/static/vendor/purify-3.3.0.min.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

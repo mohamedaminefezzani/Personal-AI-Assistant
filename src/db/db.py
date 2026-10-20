@@ -84,6 +84,22 @@ async def init_db(pool: AsyncConnectionPool):
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_messages (
+                sequence BIGSERIAL PRIMARY KEY,
+                thread_id TEXT NOT NULL REFERENCES conversations(thread_id) ON DELETE CASCADE,
+                message_id TEXT NOT NULL,
+                payload JSONB NOT NULL,
+                UNIQUE (thread_id, message_id)
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS conversation_messages_order_idx
+            ON conversation_messages (thread_id, sequence)
+        """)
+        await conn.execute("ALTER TABLE message_videos ADD COLUMN IF NOT EXISTS message_id TEXT")
+        await conn.execute("ALTER TABLE message_videos ALTER COLUMN message_index DROP NOT NULL")
+        await conn.execute("ALTER TABLE conversation_summaries ADD COLUMN IF NOT EXISTS summary_until TEXT")
 
 async def init_task_runs(pool: AsyncConnectionPool):
     """Create the task_runs table if it doesn't exist. Called at startup."""
@@ -103,4 +119,17 @@ async def init_task_runs(pool: AsyncConnectionPool):
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS task_runs_thread_id_idx
             ON task_runs (thread_id)
+        """)
+        await conn.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS input_payload JSONB")
+        await conn.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS worker_id TEXT")
+        await conn.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ")
+        # Old in-memory jobs have no recoverable worker or input payload.
+        await conn.execute("""
+            UPDATE task_runs SET status = 'error', error = 'Execution interrupted before durable queue migration',
+                updated_at = NOW()
+            WHERE status = 'running' AND lease_expires_at IS NULL
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS task_runs_one_active_thread_idx
+            ON task_runs (thread_id) WHERE status IN ('queued', 'running')
         """)

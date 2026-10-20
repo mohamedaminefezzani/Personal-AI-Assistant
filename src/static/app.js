@@ -139,6 +139,10 @@ async function apiFetch(url, options = {}) {
             throw new Error('Session expired');
         }
     }
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(typeof data.detail === 'string' ? data.detail : `Request failed (${res.status})`);
+    }
     return res;
 }
 
@@ -200,6 +204,7 @@ async function selectConversation(threadId, title) {
         _cancelActiveStream(currentThreadId);
     }
     currentThreadId = threadId;
+    setThinking(false);
 
     document.querySelectorAll('.conv-item').forEach(el => {
         el.classList.toggle('active', el.dataset.threadId === threadId);
@@ -210,11 +215,13 @@ async function selectConversation(threadId, title) {
     try {
         const res = await apiFetch(`/conversations/${threadId}/messages`);
         const messages = await res.json();
+        if (currentThreadId !== threadId) return;
 
         messagesDiv.innerHTML = '';
 
         if (messages.length === 0) {
             messagesDiv.innerHTML = `<div class="message assistant">Ready. What are we working on?</div>`;
+            await maybeReconnectStream(threadId);
             return;
         }
 
@@ -227,7 +234,7 @@ async function selectConversation(threadId, title) {
                     if (part.type === 'text') {
                         if (msg.role === 'assistant') {
                             const inner = document.createElement('div');
-                            inner.innerHTML = marked.parse(part.text);
+                            inner.innerHTML = renderMarkdown(part.text);
                             div.appendChild(inner);
                         } else {
                             const span = document.createElement('span');
@@ -275,7 +282,7 @@ async function selectConversation(threadId, title) {
                 }
             } else {
                 if (msg.role === 'assistant') {
-                    div.innerHTML = marked.parse(msg.content);
+                    div.innerHTML = renderMarkdown(msg.content);
                 } else {
                     const span = document.createElement('span');
                     span.textContent = msg.content;
@@ -476,7 +483,7 @@ function updateVideoChip(name, subtitle) {
     if (sub) sub.textContent = subtitle;
 }
 
-async function extractFrames(file, fps = 10, maxDuration = 10, width = 640, height = 360) {
+async function extractFrames(file, fps = 1, maxDuration = 10, width = 640, height = 360) {
     return new Promise((resolve) => {
         const video = document.createElement('video');
         video.src = URL.createObjectURL(file);
@@ -609,6 +616,10 @@ function setThinking(on) {
 
 async function consumeStream(taskId, threadId, typingDiv, assistantMessageDiv) {
     const response = await apiFetch(`/chat/stream/${taskId}`);
+    if (currentThreadId !== threadId) {
+        await response.body.cancel();
+        return;
+    }
     const reader   = response.body.getReader();
     const decoder  = new TextDecoder();
 
@@ -646,13 +657,13 @@ async function consumeStream(taskId, threadId, typingDiv, assistantMessageDiv) {
                         typingRemoved = true;
                     }
                     fullText = data.content; // server sends full output once
-                    assistantMessageDiv.innerHTML = marked.parse(fullText);
+                    assistantMessageDiv.innerHTML = renderMarkdown(fullText);
                     messagesDiv.scrollTop = messagesDiv.scrollHeight;
                 }
             }
         }
     } finally {
-        delete _activeReaders[threadId];
+        if (_activeReaders[threadId] === reader) delete _activeReaders[threadId];
         // Ensure typing indicator is gone even on abort
         if (!typingRemoved) {
             typingDiv.remove();
@@ -667,7 +678,8 @@ async function maybeReconnectStream(threadId) {
     const res  = await apiFetch(`/chat/status/${threadId}`);
     const data = await res.json();
 
-    if (data.status !== 'running') return; // nothing to reconnect to
+    if (currentThreadId !== threadId) return;
+    if (!['queued', 'running'].includes(data.status)) return; // nothing to reconnect to
 
     setThinking(true);
 
@@ -691,7 +703,7 @@ async function maybeReconnectStream(threadId) {
             assistantMessageDiv.textContent = 'Error: ' + e.message;
         }
     } finally {
-        setThinking(false);
+        if (currentThreadId === threadId) setThinking(false);
     }
 }
 
@@ -820,7 +832,7 @@ async function sendMessage() {
 
     clearFiles();
     imageInput.value = '';
-    setThinking(false);
+    if (currentThreadId === capturedThreadId) setThinking(false);
     messageInput.focus();
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
@@ -851,15 +863,35 @@ async function downloadZip(f) {
     URL.revokeObjectURL(url);
 }
 
+function escapeHtml(text) {
+    return String(text).replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[char]);
+}
+
+function renderMarkdown(text) {
+    if (typeof DOMPurify === 'undefined' || typeof DOMPurify.sanitize !== 'function') {
+        return escapeHtml(text || '').replace(/\n/g, '<br>');
+    }
+    return DOMPurify.sanitize(marked.parse(String(text || '')), {
+        ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'del', 'blockquote', 'ul', 'ol', 'li',
+            'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'pre', 'code', 'div', 'span', 'a',
+            'table', 'thead', 'tbody', 'tr', 'th', 'td', 'hr', 'button'],
+        ALLOWED_ATTR: ['href', 'title', 'class'],
+        ALLOW_DATA_ATTR: false,
+        ALLOW_ARIA_ATTR: false,
+    });
+}
+
 // ─── Marked: code block with copy button ─────────────────────────────────────
 
 const renderer = new marked.Renderer();
 renderer.code = function({ text, lang }) {
-    const language = lang || '';
+    const language = (lang || '').replace(/[^a-zA-Z0-9_-]/g, '');
     return `
         <div class="code-block">
             <button class="copy-btn">Copy</button>
-            <pre><code class="language-${language}">${text}</code></pre>
+            <pre><code class="language-${language}">${escapeHtml(text)}</code></pre>
         </div>
     `;
 };
@@ -892,3 +924,11 @@ function toggleCodeMode() {
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 initSession();
+
+document.getElementById('loginTab').addEventListener('click', () => switchTab('login'));
+document.getElementById('registerTab').addEventListener('click', () => switchTab('register'));
+authSubmit.addEventListener('click', submitAuth);
+document.getElementById('logoutButton').addEventListener('click', logout);
+document.getElementById('attachButton').addEventListener('click', () => imageInput.click());
+document.getElementById('codeToggle').addEventListener('click', toggleCodeMode);
+sendButton.addEventListener('click', sendMessage);

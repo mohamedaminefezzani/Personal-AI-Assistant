@@ -1,9 +1,11 @@
 from typing import Optional
+from pathlib import Path
 import socket
 import os
 import subprocess
 import tempfile
 import textwrap
+from storage import safe_path, user_directory
 
 from langchain.tools import tool
 from langchain_tavily import TavilySearch
@@ -14,11 +16,6 @@ load_dotenv()  # loads .env from the current working directory
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 tavily_api = os.getenv("TAVILY_API_KEY")
-
-# Base directory for file read/write operations.
-# Defaults to ~/assistant_files — override with FILES_BASE_DIR env var.
-FILES_BASE_DIR = os.path.expanduser(os.getenv("FILES_BASE_DIR", "~/assistant_files"))
-os.makedirs(FILES_BASE_DIR, exist_ok=True)
 
 # ─── Connectivity ─────────────────────────────────────────────────────────────
 
@@ -64,12 +61,20 @@ async def search_web_tool(query: str, max_results: Optional[int] = 5, topic: Opt
 # ─── File tools ───────────────────────────────────────────────────────────────
 
 def _safe_path(filename: str) -> str:
-    """Resolve a filename relative to FILES_BASE_DIR, blocking path traversal."""
-    base = os.path.realpath(FILES_BASE_DIR)
-    target = os.path.realpath(os.path.join(base, filename))
-    if not target.startswith(base + os.sep) and target != base:
-        raise ValueError(f"Access denied: '{filename}' escapes the files directory.")
-    return target
+    """Resolve paths within the authenticated user's namespace."""
+    return str(safe_path(filename))
+
+
+def _safe_walk(base):
+    namespace = user_directory()
+    for root, dirs, files in os.walk(base):
+        # Resolving entries also excludes Windows junctions into other namespaces.
+        dirs[:] = [d for d in dirs if not d.startswith(".")
+                   and not os.path.islink(os.path.join(root, d))
+                   and (Path(root) / d).resolve().is_relative_to(namespace)]
+        files = [f for f in files if not os.path.islink(os.path.join(root, f))
+                 and (Path(root) / f).resolve().is_relative_to(namespace)]
+        yield root, dirs, files
 
 @tool
 def read_file_tool(filename: str) -> str:
@@ -92,9 +97,10 @@ def read_file_tool(filename: str) -> str:
     if not os.path.exists(path):
         # List available files to help the agent
         available = []
-        for root, _, files in os.walk(FILES_BASE_DIR):
+        base = str(user_directory())
+        for root, _, files in _safe_walk(base):
             for f in files:
-                rel = os.path.relpath(os.path.join(root, f), FILES_BASE_DIR)
+                rel = os.path.relpath(os.path.join(root, f), base)
                 available.append(rel)
         hint = ("Available files: " + ", ".join(available)) if available else "No files exist yet."
         return f"File not found: '{filename}'. {hint}"
@@ -153,7 +159,7 @@ def list_files_tool(subdir: Optional[str] = "") -> str:
                 Leave empty to list everything.
     """
     try:
-        base = _safe_path(subdir) if subdir else FILES_BASE_DIR
+        base = _safe_path(subdir or "")
     except ValueError as e:
         return str(e)
 
@@ -161,10 +167,8 @@ def list_files_tool(subdir: Optional[str] = "") -> str:
         return "No files found."
 
     lines = []
-    for root, dirs, files in os.walk(base):
-        # skip hidden dirs
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
-        level = os.path.relpath(root, FILES_BASE_DIR)
+    for root, dirs, files in _safe_walk(base):
+        level = os.path.relpath(root, str(user_directory()))
         indent = "  " * (level.count(os.sep)) if level != "." else ""
         if level != ".":
             lines.append(f"{indent}📁 {os.path.basename(root)}/")

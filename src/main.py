@@ -1,23 +1,28 @@
 from fastapi import FastAPI, Request, HTTPException, Depends, Response
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pathlib import Path
 import asyncio
 import json
 import uuid
 import re
 import mimetypes
+import base64
+from langchain_core.messages import HumanMessage
+from db.history import archive_messages, load_messages
+from storage import safe_path, file_user
+from tasks import enqueue, worker_loop, require_conversation, recover_stale
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt as pyjwt
 
 from llm.graph import get_checkpointer, build_graph
-from llm.context import build_summary_block
+from llm.responses import current_turn_answer, display_messages
 from db.db import get_pool, close_pool, init_db, init_task_runs
 from create_agents import init_main_agent, init_coding_agent, init_video_agent
 from langfuse import Langfuse, get_client
@@ -33,11 +38,6 @@ JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 REFRESH_TOKEN_EXPIRE_DAYS = 7
-
-# ─── File base dir ────────────────────────────────────────────────────────────
-
-FILES_BASE_DIR = os.path.expanduser(os.getenv("FILES_BASE_DIR", "~/assistant_files"))
-os.makedirs(FILES_BASE_DIR, exist_ok=True)
 
 # ─── Regex ────────────────────────────────────────────────────────────────────
 
@@ -62,18 +62,6 @@ Langfuse(
 
 langfuse = get_client()
 
-# ─── In-memory subscriber registry ───────────────────────────────────────────
-# task_id -> list of asyncio.Queue
-# Each connected SSE client gets its own queue; the background task broadcasts to all.
-
-_task_subscribers: dict[str, list[asyncio.Queue]] = {}
-
-
-def _broadcast(task_id: str, event: dict):
-    for q in _task_subscribers.get(task_id, []):
-        q.put_nowait(event)
-
-
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -88,13 +76,34 @@ async def lifespan(app: FastAPI):
     # 14b model used for summarisation — best quality within the local stack
     from llm.init_llm import LLM
     app.state.summariser_llm = LLM(llm="ministral-3:14b").model
-    yield
-    await close_pool()
+    worker = asyncio.create_task(worker_loop(app.state, run_agent_task))
+    try:
+        yield
+    finally:
+        worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await worker
+        await close_pool()
 
 app = FastAPI(lifespan=lifespan)
 
 STATIC_DIR = Path(__file__).parent / "static"
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; "
+        "media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "same-origin"
+    if request.url.path in ("/", "/static/app.js"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
 
 # ─── Token helpers ────────────────────────────────────────────────────────────
 
@@ -128,14 +137,49 @@ class AuthRequest(BaseModel):
     password: str
 
 class ChatRequest(BaseModel):
-    message: str
-    thread_id: str
-    image: Optional[str] = None
-    images: Optional[list[str]] = None
-    video_frames: Optional[list[str]] = None
-    video_filename: Optional[str] = None
-    video_frame_count: Optional[int] = None
-    use_coding_agent: Optional[bool] = False
+    message: str = Field(max_length=60_000)
+    thread_id: str = Field(min_length=1, max_length=100)
+    image: Optional[str] = Field(default=None, max_length=2_800_000)
+    images: Optional[list[str]] = Field(default=None, max_length=5)
+    video_frames: Optional[list[str]] = Field(default=None, max_length=16)
+    video_filename: Optional[str] = Field(default=None, max_length=255)
+    video_frame_count: Optional[int] = Field(default=None, ge=1, le=16)
+    use_coding_agent: bool = False
+
+    @field_validator("images", "video_frames")
+    @classmethod
+    def validate_images(cls, values):
+        for value in values or []:
+            cls.validate_image(value)
+        return values
+
+    @field_validator("image")
+    @classmethod
+    def validate_image(cls, value):
+        if value is None:
+            return value
+        if len(value) > 2_800_000 or not re.match(r"^data:image/(png|jpeg|webp|gif);base64,", value):
+            raise ValueError("Images must be base64 image data, at most 2 MB each")
+        try:
+            raw = base64.b64decode(value.split(",", 1)[1], validate=True)
+        except (ValueError, TypeError):
+            raise ValueError("Invalid base64 image")
+        if not raw or len(raw) > 2_000_000:
+            raise ValueError("Images must be nonempty and at most 2 MB each")
+        return value
+
+    @model_validator(mode="after")
+    def validate_content(self):
+        if self.video_frames and (self.image or self.images):
+            raise ValueError("Send images or video frames, not both")
+        if self.image and self.images:
+            raise ValueError("Use image or images, not both")
+        if not self.message.strip() and not (self.image or self.images or self.video_frames):
+            raise ValueError("A message or attachment is required")
+        if self.video_frames:
+            self.video_frame_count = len(self.video_frames)
+        return self
+
 
 class ConversationRequest(BaseModel):
     title: Optional[str] = "New Chat"
@@ -304,286 +348,111 @@ async def health(req: Request):
 
 @app.get("/files/{filepath:path}")
 async def download_file(filepath: str, current_user: dict = Depends(get_current_user)):
-    base   = os.path.realpath(FILES_BASE_DIR)
-    target = os.path.realpath(os.path.join(base, filepath))
-    if not target.startswith(base + os.sep):
+    try:
+        target = safe_path(filepath, current_user["id"])
+    except ValueError:
         raise HTTPException(status_code=403, detail="Access denied")
-    if not os.path.exists(target):
+    if not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    mime, _ = mimetypes.guess_type(target)
-    return FileResponse(target, media_type=mime or "application/octet-stream",
-                        filename=os.path.basename(target))
-
-# ─── Background agent task ────────────────────────────────────────────────────
-
-async def load_user_memory(pool, user_id: str) -> str:
-    async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT key, value FROM user_memory WHERE user_id = %s ORDER BY updated_at DESC LIMIT 50",
-                (user_id,)
-            )
-            rows = await cur.fetchall()
-    if not rows:
-        return ""
-    lines = "\n".join(f"- {r[0]}: {r[1]}" for r in rows)
-    return f"\n\n## What I remember about you\n{lines}"
+    mime, _ = mimetypes.guess_type(target.name)
+    return FileResponse(target, media_type=mime or "application/octet-stream", filename=target.name)
 
 
-async def run_agent_task(
-    app_state,
-    task_id: str,
-    message: str,
-    images: Optional[list[str]],
-    video_frames: Optional[list[str]],
-    video_filename: Optional[str],
-    video_frame_count: Optional[int],
-    use_coding_agent: bool,
-    thread_id: str,
-    user_id: str,
-):
-    """
-    Runs entirely in a background asyncio task.
-    Writes progress to task_runs in Postgres and broadcasts to any live SSE subscribers.
-    """
-    graph          = app_state.graph
-    pool           = app_state.pool
-    summariser_llm = app_state.summariser_llm
-
-    memory_block  = await load_user_memory(pool, user_id)
-    summary_block = await build_summary_block(pool, thread_id)
-
-    # Build graph inputs
-    if video_frames:
-        prompt  = message or "Please describe and summarise what happens in this video."
-        content = [{"type": "text", "text": prompt + memory_block}]
-        for frame in video_frames:
-            content.append({"type": "image_url", "image_url": {"url": frame}})
-        inputs = {
-            "messages":         [{"role": "user", "content": content}],
-            "video_frames":     video_frames,
-            "use_coding_agent": False,
-        }
-    else:
-        all_images   = images or []
-        # Inject memory + summary into the human message so agents always have context
-        context_suffix = memory_block + summary_block
-        full_message   = message + context_suffix if context_suffix.strip() else message
-        if all_images:
-            content = [{"type": "text", "text": full_message}]
-            for img in all_images:
-                content.append({"type": "image_url", "image_url": {"url": img}})
-        else:
-            content = full_message
-        inputs = {
-            "messages":         [{"role": "user", "content": content}],
-            "video_frames":     None,
-            "use_coding_agent": bool(use_coding_agent),
-        }
-
+async def run_agent_task(app_state, task_id, thread_id, user_id, **payload):
+    graph, pool = app_state.graph, app_state.pool
+    message = payload["message"]
+    frames = payload.get("video_frames") or []
+    images = payload.get("images") or ([payload["image"]] if payload.get("image") else [])
+    content = message
+    if frames or images:
+        content = [{"type": "text", "text": message or "Describe this video."}]
+        content += [{"type": "image_url", "image_url": {"url": image}} for image in frames or images]
+    human = HumanMessage(content=content, id=task_id + ":user")
     config = {
         "configurable": {
-            "thread_id":      thread_id,
-            "pool":           pool,
-            "summariser_llm": summariser_llm,
+            "thread_id": thread_id, "user_id": user_id, "pool": pool,
+            "summariser_llm": app_state.summariser_llm,
         },
         "callbacks": [CallbackHandler()],
+        "recursion_limit": 50,
     }
-
-    agent_keys = ("main_agent", "coding_agent", "video_agent")
-
+    token = file_user.set(user_id)
     try:
-        last_message = None
-        async for chunk in graph.astream(inputs, stream_mode="updates", config=config):
-            for key in agent_keys:
-                if key in chunk:
-                    last_message = chunk[key]["messages"][-1]
-
-        output = last_message.content if last_message else ""
-
-        # Persist video metadata
-        if last_message and video_frames and video_filename and video_frame_count:
-            state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
-            message_index = sum(
-                1 for m in state.values.get("messages", [])
-                if getattr(m, "type", None) == "human"
-            )
+        # Backfill surviving legacy messages before appending the new turn.
+        state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+        await archive_messages(pool, thread_id, state.values.get("messages", []) if state else [])
+        await archive_messages(pool, thread_id, [human])
+        if frames:
             async with pool.connection() as conn:
                 await conn.execute(
-                    """INSERT INTO message_videos (thread_id, message_index, filename, frame_count)
-                       VALUES (%s, %s, %s, %s)
-                       ON CONFLICT (thread_id, message_index) DO NOTHING""",
-                    (thread_id, message_index, video_filename, video_frame_count)
+                    """INSERT INTO message_videos (thread_id, message_index, message_id, filename, frame_count)
+                       VALUES (%s, %s, %s, %s, %s)""",
+                    (thread_id, None, human.id,
+                     payload.get("video_filename") or "video", len(frames)),
                 )
-
-        # Mark complete in DB
-        async with pool.connection() as conn:
-            await conn.execute(
-                """UPDATE task_runs
-                   SET status = 'done', output = %s, updated_at = NOW()
-                   WHERE task_id = %s""",
-                (output, task_id)
-            )
-
-        _broadcast(task_id, {"content": output, "done": True})
-
-    except Exception as e:
-        err = str(e)
-        async with pool.connection() as conn:
-            await conn.execute(
-                """UPDATE task_runs
-                   SET status = 'error', error = %s, updated_at = NOW()
-                   WHERE task_id = %s""",
-                (err, task_id)
-            )
-        _broadcast(task_id, {"error": err, "done": True})
-
+        result = await graph.ainvoke({
+            "messages": [human], "video_frames": frames or None,
+            "use_coding_agent": payload.get("use_coding_agent", False),
+        }, config)
+        await archive_messages(pool, thread_id, result["messages"])
+        return current_turn_answer(result["messages"], human.id)
     finally:
-        # Clean up subscriber list for this task
-        _task_subscribers.pop(task_id, None)
-        try:
-            langfuse.flush()
-        except Exception:
-            pass
+        file_user.reset(token)
 
-# ─── Chat endpoints ───────────────────────────────────────────────────────────
 
 @app.post("/chat")
 async def chat(request: ChatRequest, req: Request, current_user: dict = Depends(get_current_user)):
-    """
-    Start a generation. Returns task_id immediately.
-    The actual work runs in a background asyncio task.
-    """
-    pool     = req.app.state.pool
-    task_id  = str(uuid.uuid4())
-    user_id  = current_user["id"]
-
-    async with pool.connection() as conn:
-        await conn.execute(
-            """INSERT INTO task_runs (task_id, thread_id, user_id, status)
-               VALUES (%s, %s, %s, 'running')""",
-            (task_id, request.thread_id, user_id)
-        )
-
-    # Register subscriber list before launching task (avoids a race)
-    _task_subscribers[task_id] = []
-
-    asyncio.create_task(run_agent_task(
-        app_state        = req.app.state,
-        task_id          = task_id,
-        message          = request.message,
-        images           = request.images or ([request.image] if request.image else []),
-        video_frames     = request.video_frames,
-        video_filename   = request.video_filename,
-        video_frame_count= request.video_frame_count,
-        use_coding_agent = request.use_coding_agent or False,
-        thread_id        = request.thread_id,
-        user_id          = user_id,
-    ))
-
+    payload = request.model_dump(exclude={"thread_id"})
+    task_id = await enqueue(req.app.state.pool, request.thread_id, current_user["id"], payload)
     return {"task_id": task_id}
 
 
 @app.get("/chat/stream/{task_id}")
 async def chat_stream(task_id: str, req: Request, current_user: dict = Depends(get_current_user)):
-    """
-    SSE endpoint. Any number of tabs can connect to the same task_id.
-
-    If the task is already done it returns the stored result immediately.
-    If it's still running the client joins the live broadcast queue.
-    If it errored it returns the error immediately.
-    """
     pool = req.app.state.pool
 
-    # Check existing DB state first — handles reconnects / page refresh
-    async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT status, output, error, user_id FROM task_runs WHERE task_id = %s",
-                (task_id,)
+    async def read_task():
+        async with pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT status, output, error FROM task_runs WHERE task_id = %s AND user_id = %s",
+                (task_id, current_user["id"]),
             )
-            row = await cur.fetchone()
+            return await cursor.fetchone()
 
-    if not row:
+    if not await read_task():
         raise HTTPException(status_code=404, detail="Task not found")
 
-    # Ownership check
-    if str(row[3]) != current_user["id"]:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    async def stream():
+        while not await req.is_disconnected():
+            await recover_stale(pool)
+            row = await read_task()
+            if not row:
+                yield f"data: {json.dumps({'error': 'Task no longer exists', 'done': True})}\n\n"
+                break
+            status, output, error = row
+            if status in ("done", "error"):
+                event = {"content": output, "done": True} if status == "done" else {"error": error, "done": True}
+                yield f"data: {json.dumps(event)}\n\n"
+                break
+            yield ": keepalive\n\n"
+            await asyncio.sleep(1)
 
-    status, output, error = row[0], row[1], row[2]
-
-    async def already_done():
-        if status == "done":
-            yield f"data: {json.dumps({'content': output, 'done': True})}\n\n"
-        else:
-            yield f"data: {json.dumps({'error': error or 'Unknown error', 'done': True})}\n\n"
-
-    if status in ("done", "error"):
-        return StreamingResponse(already_done(), media_type="text/event-stream")
-
-    # Task is still running — subscribe to live broadcasts
-    queue: asyncio.Queue = asyncio.Queue()
-
-    if task_id not in _task_subscribers:
-        # Task finished between the DB read and here — re-read from DB
-        async with pool.connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "SELECT status, output, error FROM task_runs WHERE task_id = %s",
-                    (task_id,)
-                )
-                row2 = await cur.fetchone()
-        if row2 and row2[0] in ("done", "error"):
-            async def late_done():
-                if row2[0] == "done":
-                    yield f"data: {json.dumps({'content': row2[1], 'done': True})}\n\n"
-                else:
-                    yield f"data: {json.dumps({'error': row2[2] or 'Unknown error', 'done': True})}\n\n"
-            return StreamingResponse(late_done(), media_type="text/event-stream")
-
-    _task_subscribers.setdefault(task_id, []).append(queue)
-
-    async def live_stream():
-        try:
-            while True:
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=30)
-                    yield f"data: {json.dumps(event)}\n\n"
-                    if event.get("done"):
-                        break
-                except asyncio.TimeoutError:
-                    # Send a keepalive comment so the browser doesn't close the connection
-                    yield ": keepalive\n\n"
-        finally:
-            try:
-                _task_subscribers.get(task_id, []).remove(queue)
-            except ValueError:
-                pass
-
-    return StreamingResponse(live_stream(), media_type="text/event-stream")
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/chat/status/{thread_id}")
 async def chat_status(thread_id: str, req: Request, current_user: dict = Depends(get_current_user)):
-    """
-    Returns the most recent running or done task for a thread.
-    The frontend calls this on conversation switch to know whether to reconnect to a stream.
-    """
     pool = req.app.state.pool
+    await recover_stale(pool)
     async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """SELECT task_id, status FROM task_runs
-                   WHERE thread_id = %s AND user_id = %s
-                   ORDER BY created_at DESC LIMIT 1""",
-                (thread_id, current_user["id"])
-            )
-            row = await cur.fetchone()
+        await require_conversation(conn, thread_id, current_user["id"])
+        cursor = await conn.execute(
+            """SELECT task_id, status FROM task_runs WHERE thread_id = %s AND user_id = %s
+               ORDER BY created_at DESC LIMIT 1""", (thread_id, current_user["id"]),
+        )
+        row = await cursor.fetchone()
+    return {"task_id": row[0] if row else None, "status": row[1] if row else None}
 
-    if not row:
-        return {"task_id": None, "status": None}
-    return {"task_id": row[0], "status": row[1]}
 
 # ─── Conversations ────────────────────────────────────────────────────────────
 
@@ -630,6 +499,7 @@ async def create_conversation(body: ConversationRequest, req: Request, current_u
 async def rename_conversation(thread_id: str, body: ConversationRequest, req: Request, current_user: dict = Depends(get_current_user)):
     pool = req.app.state.pool
     async with pool.connection() as conn:
+        await require_conversation(conn, thread_id, current_user["id"])
         await conn.execute(
             "UPDATE conversations SET title = %s WHERE thread_id = %s AND user_id = %s",
             (body.title, thread_id, current_user["id"])
@@ -640,42 +510,44 @@ async def rename_conversation(thread_id: str, body: ConversationRequest, req: Re
 async def delete_conversation(thread_id: str, req: Request, current_user: dict = Depends(get_current_user)):
     pool = req.app.state.pool
     async with pool.connection() as conn:
-        await conn.execute(
-            "DELETE FROM conversations WHERE thread_id = %s AND user_id = %s",
-            (thread_id, current_user["id"])
-        )
+        async with conn.transaction():
+            await require_conversation(conn, thread_id, current_user["id"], lock=True)
+            cursor = await conn.execute(
+                "SELECT 1 FROM task_runs WHERE thread_id = %s AND status IN ('queued', 'running')", (thread_id,),
+            )
+            if await cursor.fetchone():
+                raise HTTPException(status_code=409, detail="Wait for the active generation before deleting this conversation")
+            # Checkpoints have no FK to conversations. Delete them explicitly.
+            for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints", "message_videos",
+                          "conversation_summaries", "task_runs"):
+                await conn.execute(f"DELETE FROM {table} WHERE thread_id = %s", (thread_id,))
+            await conn.execute("DELETE FROM conversations WHERE thread_id = %s", (thread_id,))
     return {"deleted": thread_id}
+
 
 @app.get("/conversations/{thread_id}/messages")
 async def get_messages(thread_id: str, req: Request, current_user: dict = Depends(get_current_user)):
     pool = req.app.state.pool
     async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT 1 FROM conversations WHERE thread_id = %s AND user_id = %s",
-                (thread_id, current_user["id"])
-            )
-            if not await cur.fetchone():
-                raise HTTPException(status_code=403, detail="Forbidden")
-
-            await cur.execute(
-                "SELECT message_index, filename, frame_count FROM message_videos WHERE thread_id = %s",
-                (thread_id,)
-            )
-            video_rows = await cur.fetchall()
-            video_meta = {row[0]: {"filename": row[1], "frame_count": row[2]} for row in video_rows}
-
-    graph  = req.app.state.graph
-    config = {"configurable": {"thread_id": thread_id}}
-    state  = await graph.aget_state(config)
-
-    if not state or not state.values.get("messages"):
-        return []
+        await require_conversation(conn, thread_id, current_user["id"])
+        cursor = await conn.execute(
+            "SELECT message_index, filename, frame_count, message_id FROM message_videos WHERE thread_id = %s",
+            (thread_id,),
+        )
+        video_rows = await cursor.fetchall()
+    video_meta = {r[3]: {"filename": r[1], "frame_count": r[2]} for r in video_rows if r[3]}
+    legacy_video_meta = {r[0] - 1: {"filename": r[1], "frame_count": r[2]} for r in video_rows if not r[3]}
+    messages = await load_messages(pool, thread_id)
+    if not messages:
+        state = await req.app.state.graph.aget_state({"configurable": {"thread_id": thread_id}})
+        legacy = state.values.get("messages", []) if state else []
+        await archive_messages(pool, thread_id, legacy)
+        messages = await load_messages(pool, thread_id)
 
     result       = []
     human_index  = 0
 
-    for msg in state.values["messages"]:
+    for msg in display_messages(messages):
         msg_type = getattr(msg, "type", None)
         content  = msg.content
         if msg_type not in ("human", "ai"):
@@ -687,10 +559,8 @@ async def get_messages(thread_id: str, req: Request, current_user: dict = Depend
 
         if isinstance(content, list):
             parts = []
-            image_url_count = sum(1 for c in content if isinstance(c, dict) and c.get("type") == "image_url")
-
-            if role == "user" and image_url_count > 5 and human_index in video_meta:
-                meta = video_meta[human_index]
+            if role == "user" and (msg.id in video_meta or human_index in legacy_video_meta):
+                meta = video_meta.get(msg.id) or legacy_video_meta[human_index]
                 for c in content:
                     if isinstance(c, dict) and c.get("type") == "text" and c.get("text", "").strip():
                         parts.append({"type": "text", "text": c["text"]})
