@@ -9,6 +9,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from db.history import archive_messages
 from llm.context import load_summary
+from orchestration import emit
 
 
 class AgentState(TypedDict):
@@ -27,6 +28,7 @@ def agent_node(agent):
     async def invoke(state, config):
         cfg = config.get('configurable', {})
         clean_state = {**state, 'messages': [m for m in state['messages'] if not isinstance(m, SystemMessage)]}
+        await emit(config, 'agent_started', {'agent': agent.name}, 'agent:' + agent.name + ':start')
         # Archive old checkpoints before any context selection takes place.
         await archive_messages(cfg['pool'], cfg['thread_id'], clean_state['messages'])
         result = await agent.ainvoke(clean_state, config)

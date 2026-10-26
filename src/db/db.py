@@ -13,7 +13,8 @@ async def get_pool() -> AsyncConnectionPool:
         _pool = AsyncConnectionPool(
             conninfo=os.getenv("DATABASE_URL"),
             max_size=20,
-            kwargs={"autocommit": True},
+            kwargs={"autocommit": True, "connect_timeout": 10},
+            check=AsyncConnectionPool.check_connection,
             open=False,
             max_idle=300,
             reconnect_timeout=30,
@@ -123,6 +124,15 @@ async def init_task_runs(pool: AsyncConnectionPool):
         await conn.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS input_payload JSONB")
         await conn.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS worker_id TEXT")
         await conn.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ")
+        await conn.execute("ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS pending_approvals JSONB")
+        await conn.execute('''CREATE TABLE IF NOT EXISTS task_events (
+            sequence BIGSERIAL PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES task_runs(task_id) ON DELETE CASCADE,
+            event_key TEXT NOT NULL,
+            payload JSONB NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(task_id, event_key)
+        )''')
         # Old in-memory jobs have no recoverable worker or input payload.
         await conn.execute("""
             UPDATE task_runs SET status = 'error', error = 'Execution interrupted before durable queue migration',
@@ -130,6 +140,7 @@ async def init_task_runs(pool: AsyncConnectionPool):
             WHERE status = 'running' AND lease_expires_at IS NULL
         """)
         await conn.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS task_runs_one_active_thread_idx
-            ON task_runs (thread_id) WHERE status IN ('queued', 'running')
+            CREATE UNIQUE INDEX IF NOT EXISTS task_runs_one_active_thread_v2_idx
+            ON task_runs (thread_id) WHERE status IN ('queued', 'running', 'waiting_approval')
         """)
+        await conn.execute('DROP INDEX IF EXISTS task_runs_one_active_thread_idx')

@@ -57,6 +57,24 @@ test('production migrations, job leases, ownership namespaces and archive persis
         assert.equal(result.rows[0].task_id, 'survives-restart');
         assert.equal(result.rows[0].input_payload.message, 'hello');
         assert.equal((await db.query(statement('load_messages'), ['thread'])).rows[0].payload.data.content, 'first message');
+        const approvals = [{interrupt_id: 'interrupt-1', approval_id: 'proposal-1', tool: 'write_file_tool'}];
+        await db.query(statement('pause_task'), [approvals, 'survives-restart', 'after-restart']);
+        await db.query(statement('emit'), ['survives-restart', 'step-1', {kind: 'delegation_started'}]);
+        await db.query(statement('emit'), ['survives-restart', 'step-1', {kind: 'delegation_started'}]);
+        await assert.rejects(db.query(statement('enqueue'), ['during-approval', 'thread', user, input]), {code: '23505'});
+        await db.close();
+        db = new PGlite(directory);
+        await db.exec(statement('recover_stale'));
+        assert.equal((await db.query(statement('claim'), ['other-worker'])).rows.length, 0);
+        const pending = await db.query(statement('decide'), ['survives-restart', user]);
+        assert.equal(pending.rows[0].status, 'waiting_approval');
+        assert.deepEqual(pending.rows[0].pending_approvals, approvals);
+        assert.equal((await db.query(statement('decide'), ['survives-restart', '00000000-0000-0000-0000-000000000002'])).rows.length, 0);
+        assert.equal((await db.query(statement('read_events'), ['survives-restart', 0])).rows.length, 1);
+        await db.query(statement('decide', 1), [{resume: {'interrupt-1': {decision: 'approve', approval_id: 'proposal-1'}}}, 'survives-restart']);
+        const resumed = (await db.query(statement('claim'), ['resumed-worker'])).rows[0];
+        assert.equal(resumed.input_payload.message, 'hello');
+        assert.equal(resumed.input_payload.resume['interrupt-1'].decision, 'approve');
         await db.query('DELETE FROM conversations WHERE thread_id = $1', ['thread']);
         assert.equal((await db.query(statement('load_messages'), ['thread'])).rows.length, 0);
     } finally {

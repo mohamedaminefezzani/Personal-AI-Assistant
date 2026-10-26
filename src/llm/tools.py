@@ -1,10 +1,12 @@
-from typing import Optional
+from typing import Optional, Literal
 from pathlib import Path
 import socket
 import os
 import subprocess
 import tempfile
 import textwrap
+import json
+from config import SEARCH_MAX_RESULTS, SEARCH_RESULT_CHARS
 from storage import safe_path, user_directory
 
 from langchain.tools import tool
@@ -32,7 +34,8 @@ def is_connected():
 # ─── Web search ───────────────────────────────────────────────────────────────
 
 @tool
-async def search_web_tool(query: str, max_results: Optional[int] = 5, topic: Optional[str] = "general") -> str:
+async def search_web_tool(query: str, max_results: Optional[int] = None, topic: Optional[str] = "general",
+                          time_range: Optional[Literal['day', 'week', 'month', 'year']] = None) -> str:
     """
     Search the web for current or external information.
 
@@ -40,23 +43,35 @@ async def search_web_tool(query: str, max_results: Optional[int] = 5, topic: Opt
     or information not likely to be in the model's training data.
     If unable to perform the operation (offline for example), you may
     state that you are unable to access the internet.
+    always state the source(s) used for your information.
 
     Args:
         query: The search query to look up on the web.
-        max_results: Number of search results to return. Defaults to 5.
+        max_results: Number of results, capped by the configured search limit (default 3).
         topic: Type of topic to search for. It can be 'general', 'news' or 'finance'.
+        time_range: Publication window. Use 'week' for the last seven days.
     """
-    if not is_connected():
-        return "An internet connection is required to perform the web search."
-
     tavily_search_tool = TavilySearch(
-        max_results=max_results,
+        max_results=min(SEARCH_MAX_RESULTS, max(1, max_results or SEARCH_MAX_RESULTS)),
         topic=topic,
         search_depth="advanced"
     )
 
-    results = await tavily_search_tool.ainvoke(query)
-    return str(results)
+    search_args = {'query': query}
+    if time_range:
+        search_args['time_range'] = time_range
+    results = await tavily_search_tool.ainvoke(search_args)
+    if not isinstance(results, dict) or not isinstance(results.get('results'), list):
+        raise ValueError('Unexpected web search response format')
+    selected = []
+    for result in results['results'][:min(SEARCH_MAX_RESULTS, max(1, max_results or SEARCH_MAX_RESULTS))]:
+        selected.append({
+            'title': str(result.get('title', ''))[:300],
+            'url': result.get('url', ''),
+            'content': str(result.get('content', ''))[:SEARCH_RESULT_CHARS],
+            **({'published_date': result['published_date']} if result.get('published_date') else {}),
+        })
+    return json.dumps({'results': selected}, ensure_ascii=False)
 
 # ─── File tools ───────────────────────────────────────────────────────────────
 

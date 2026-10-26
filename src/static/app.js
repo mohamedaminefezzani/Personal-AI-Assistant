@@ -588,6 +588,7 @@ messageInput.addEventListener('keydown', function(e) {
 // Keyed by thread_id so switching conversations cancels the previous reader.
 
 const _activeReaders = {};   // thread_id -> ReadableStreamDefaultReader
+const _waitingApprovals = new Set();
 
 function _cancelActiveStream(threadId) {
     if (_activeReaders[threadId]) {
@@ -599,6 +600,7 @@ function _cancelActiveStream(threadId) {
 // ─── Thinking state ───────────────────────────────────────────────────────────
 
 function setThinking(on) {
+    on = on || _waitingApprovals.has(currentThreadId);
     sendButton.disabled = on;
     messageInput.disabled = on;
     if (on) {
@@ -610,11 +612,69 @@ function setThinking(on) {
     }
 }
 
+function showStep(panel, event) {
+    const line = document.createElement('div');
+    const labels = {agent_started: 'Agent started', delegation_started: 'Delegated to coding',
+        delegation_completed: 'Coding report received', tool_started: 'Action started',
+        tool_completed: 'Action completed', action_rejected: 'Action rejected',
+        approval_requested: 'Proposed action', approval_decided: 'Approval decision'};
+    line.textContent = `${labels[event.kind] || event.kind}: ${event.agent || ''} ${event.tool || ''} ${event.decision || ''}`;
+    panel.appendChild(line);
+    if (event.proposal) {
+        const details = document.createElement('details');
+        const summary = document.createElement('summary');
+        summary.textContent = 'Review proposed changes';
+        const content = document.createElement('pre');
+        content.textContent = event.proposal.diff || JSON.stringify(event.proposal.args, null, 2);
+        details.append(summary, content);
+        panel.appendChild(details);
+    }
+}
+
+function showApprovals(panel, approvals, taskId, threadId) {
+    _waitingApprovals.add(threadId);
+    setThinking(true);
+    for (const approval of approvals) {
+        const card = document.createElement('section');
+        card.className = 'approval-card';
+        const title = document.createElement('strong');
+        title.textContent = `Approval required: ${approval.tool}`;
+        const proposal = document.createElement('pre');
+        proposal.textContent = (approval.notice ? approval.notice + '\n\n' : '')
+            + (approval.diff || JSON.stringify(approval.args, null, 2));
+        const status = document.createElement('div');
+        card.append(title, proposal, status);
+        const buttons = [];
+        for (const [decision, label] of [['approve', 'Approve'], ['reject', 'Reject']]) {
+            const button = document.createElement('button');
+            button.textContent = label;
+            buttons.push(button);
+            button.addEventListener('click', async () => {
+                buttons.forEach(item => { item.disabled = true; });
+                try {
+                    const response = await apiFetch(`/chat/approval/${taskId}`, {
+                        method: 'POST', headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({approval_id: approval.approval_id, decision})
+                    });
+                    if (!response.ok) throw new Error((await response.json()).detail || 'Approval failed');
+                    _waitingApprovals.delete(threadId);
+                    if (currentThreadId === threadId) await selectConversation(threadId);
+                } catch (error) {
+                    status.textContent = error.message;
+                    buttons.forEach(item => { item.disabled = false; });
+                }
+            });
+            card.appendChild(button);
+        }
+        panel.appendChild(card);
+    }
+}
+
 // ─── Core stream consumer ─────────────────────────────────────────────────────
 // Reads SSE from /chat/stream/{taskId} and populates typingDiv + assistantDiv.
 // Works for both new messages and reconnects.
 
-async function consumeStream(taskId, threadId, typingDiv, assistantMessageDiv) {
+async function consumeStream(taskId, threadId, typingDiv, assistantMessageDiv, showFinal = true) {
     const response = await apiFetch(`/chat/stream/${taskId}`);
     if (currentThreadId !== threadId) {
         await response.body.cancel();
@@ -624,10 +684,16 @@ async function consumeStream(taskId, threadId, typingDiv, assistantMessageDiv) {
     const decoder  = new TextDecoder();
 
     _activeReaders[threadId] = reader;
+    _waitingApprovals.delete(threadId);
+    const progressPanel = document.createElement('div');
+    progressPanel.className = 'agent-progress';
+    progressPanel.setAttribute('aria-live', 'polite');
+    assistantMessageDiv.before(progressPanel);
 
     let fullText     = '';
     let typingRemoved = false;
     let buffer       = '';
+    let receivedTerminal = false;
 
     try {
         while (true) {
@@ -642,6 +708,9 @@ async function consumeStream(taskId, threadId, typingDiv, assistantMessageDiv) {
                 if (!line.startsWith('data: ')) continue;
                 let data;
                 try { data = JSON.parse(line.slice(6)); } catch { continue; }
+                if (data.done === true) receivedTerminal = true;
+                if (data.event) showStep(progressPanel, data.event);
+                if (data.approvals) showApprovals(progressPanel, data.approvals, taskId, threadId);
 
                 if (data.error) {
                     if (!typingRemoved) {
@@ -650,7 +719,7 @@ async function consumeStream(taskId, threadId, typingDiv, assistantMessageDiv) {
                         typingRemoved = true;
                     }
                     assistantMessageDiv.textContent = 'Error: ' + data.error;
-                } else if (data.content) {
+                } else if (data.content && showFinal) {
                     if (!typingRemoved) {
                         typingDiv.remove();
                         assistantMessageDiv.style.display = '';
@@ -662,6 +731,9 @@ async function consumeStream(taskId, threadId, typingDiv, assistantMessageDiv) {
                 }
             }
         }
+        if (!receivedTerminal && currentThreadId === threadId) {
+            throw new Error('Connection closed before the result was received. Reopen this conversation to check the generation status.');
+        }
     } finally {
         if (_activeReaders[threadId] === reader) delete _activeReaders[threadId];
         // Ensure typing indicator is gone even on abort
@@ -669,6 +741,7 @@ async function consumeStream(taskId, threadId, typingDiv, assistantMessageDiv) {
             typingDiv.remove();
             assistantMessageDiv.style.display = '';
         }
+        if (!showFinal) assistantMessageDiv.remove();
     }
 }
 
@@ -679,7 +752,7 @@ async function maybeReconnectStream(threadId) {
     const data = await res.json();
 
     if (currentThreadId !== threadId) return;
-    if (!['queued', 'running'].includes(data.status)) return; // nothing to reconnect to
+    if (!data.task_id || !['queued', 'running', 'waiting_approval', 'done', 'error'].includes(data.status)) return;
 
     setThinking(true);
 
@@ -696,7 +769,7 @@ async function maybeReconnectStream(threadId) {
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
     try {
-        await consumeStream(data.task_id, threadId, typingDiv, assistantMessageDiv);
+        await consumeStream(data.task_id, threadId, typingDiv, assistantMessageDiv, data.status !== 'done');
     } catch (e) {
         if (e.message !== 'Session expired') {
             assistantMessageDiv.style.display = '';

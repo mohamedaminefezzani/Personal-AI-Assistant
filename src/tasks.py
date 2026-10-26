@@ -3,17 +3,18 @@
 import asyncio
 from contextlib import suppress
 import logging
-import os
 import uuid
 
 from fastapi import HTTPException
 from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
-from errors import ContextBudgetExceeded
+from errors import ContextBudgetExceeded, ConversationSummaryError
+from config import TASK_TIMEOUT_SECONDS
+from orchestration import WaitingApproval, pause_task
 
 
 logger = logging.getLogger(__name__)
-TASK_TIMEOUT = max(1, int(os.getenv("TASK_TIMEOUT_SECONDS", "300")))
+TASK_TIMEOUT = TASK_TIMEOUT_SECONDS
 
 
 async def require_conversation(conn, thread_id, user_id, *, lock=False):
@@ -37,7 +38,7 @@ async def enqueue(pool, thread_id, user_id, payload):
                     (task_id, thread_id, user_id, Jsonb(payload)),
                 )
     except UniqueViolation:
-        raise HTTPException(status_code=409, detail="A generation is already queued or running in this conversation")
+        raise HTTPException(status_code=409, detail="A generation is active or waiting for approval in this conversation")
     return task_id
 
 
@@ -112,10 +113,17 @@ async def worker_loop(app_state, execute):
             pulse = asyncio.create_task(heartbeat(pool, task_id, worker_id, execution))
             try:
                 output = await asyncio.wait_for(execution, timeout=TASK_TIMEOUT)
-                await finish(pool, task_id, worker_id, output=output)
+                if isinstance(output, WaitingApproval):
+                    await pause_task(pool, task_id, worker_id, output.approvals)
+                else:
+                    await finish(pool, task_id, worker_id, output=output)
             except asyncio.TimeoutError:
-                await finish(pool, task_id, worker_id, error="Generation exceeded its time limit")
-            except ContextBudgetExceeded as exc:
+                logger.warning("Task %s exceeded generation limit (%ss)", task_id, TASK_TIMEOUT)
+                await finish(pool, task_id, worker_id, error=(
+                    f"Generation exceeded its time limit ({TASK_TIMEOUT:g}s). "
+                    "Increase TASK_TIMEOUT_SECONDS or choose a smaller model."
+                ))
+            except (ContextBudgetExceeded, ConversationSummaryError) as exc:
                 await finish(pool, task_id, worker_id, error=str(exc))
             except asyncio.CancelledError:
                 await finish(pool, task_id, worker_id, error="Execution interrupted; please send your message again")

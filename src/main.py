@@ -23,6 +23,10 @@ import jwt as pyjwt
 
 from llm.graph import get_checkpointer, build_graph
 from llm.responses import current_turn_answer, display_messages
+from config import SUMMARY_MODEL
+from orchestration import WaitingApproval, read_events, decide
+from langgraph.types import Command
+from typing import Literal
 from db.db import get_pool, close_pool, init_db, init_task_runs
 from create_agents import init_main_agent, init_coding_agent, init_video_agent
 from langfuse import Langfuse, get_client
@@ -48,8 +52,8 @@ FILE_BLOCK_RE = re.compile(
 
 # ─── Agents & Langfuse ────────────────────────────────────────────────────────
 
-main_agent   = init_main_agent()
 coding_agent = init_coding_agent()
+main_agent   = init_main_agent(coding_agent)
 video_agent  = init_video_agent()
 
 Langfuse(
@@ -73,9 +77,9 @@ async def lifespan(app: FastAPI):
     await checkpointer.setup()
     app.state.graph = build_graph(main_agent, coding_agent, video_agent, checkpointer)
     app.state.pool  = pool
-    # 14b model used for summarisation — best quality within the local stack
     from llm.init_llm import LLM
-    app.state.summariser_llm = LLM(llm="ministral-3:14b").model
+    from config import SUMMARY_NUM_PREDICT
+    app.state.summariser_llm = LLM(llm=SUMMARY_MODEL, num_predict=SUMMARY_NUM_PREDICT).model
     worker = asyncio.create_task(worker_loop(app.state, run_agent_task))
     try:
         yield
@@ -370,7 +374,7 @@ async def run_agent_task(app_state, task_id, thread_id, user_id, **payload):
     human = HumanMessage(content=content, id=task_id + ":user")
     config = {
         "configurable": {
-            "thread_id": thread_id, "user_id": user_id, "pool": pool,
+            "thread_id": thread_id, "user_id": user_id, "pool": pool, "task_id": task_id,
             "summariser_llm": app_state.summariser_llm,
         },
         "callbacks": [CallbackHandler()],
@@ -382,7 +386,7 @@ async def run_agent_task(app_state, task_id, thread_id, user_id, **payload):
         state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
         await archive_messages(pool, thread_id, state.values.get("messages", []) if state else [])
         await archive_messages(pool, thread_id, [human])
-        if frames:
+        if frames and not payload.get('resume'):
             async with pool.connection() as conn:
                 await conn.execute(
                     """INSERT INTO message_videos (thread_id, message_index, message_id, filename, frame_count)
@@ -390,10 +394,13 @@ async def run_agent_task(app_state, task_id, thread_id, user_id, **payload):
                     (thread_id, None, human.id,
                      payload.get("video_filename") or "video", len(frames)),
                 )
-        result = await graph.ainvoke({
+        inputs = Command(resume=payload['resume']) if payload.get('resume') else {
             "messages": [human], "video_frames": frames or None,
             "use_coding_agent": payload.get("use_coding_agent", False),
-        }, config)
+        }
+        result = await graph.ainvoke(inputs, config)
+        if result.get('__interrupt__'):
+            return WaitingApproval([{'interrupt_id': item.id, **item.value} for item in result['__interrupt__']])
         await archive_messages(pool, thread_id, result["messages"])
         return current_turn_answer(result["messages"], human.id)
     finally:
@@ -405,6 +412,18 @@ async def chat(request: ChatRequest, req: Request, current_user: dict = Depends(
     payload = request.model_dump(exclude={"thread_id"})
     task_id = await enqueue(req.app.state.pool, request.thread_id, current_user["id"], payload)
     return {"task_id": task_id}
+
+
+class ApprovalDecision(BaseModel):
+    approval_id: str = Field(min_length=1, max_length=128)
+    decision: Literal['approve', 'reject']
+
+
+@app.post('/chat/approval/{task_id}')
+async def approve_action(task_id: str, body: ApprovalDecision, req: Request,
+                         current_user: dict = Depends(get_current_user)):
+    await decide(req.app.state.pool, task_id, current_user['id'], body.approval_id, body.decision)
+    return {'task_id': task_id, 'status': 'queued'}
 
 
 @app.get("/chat/stream/{task_id}")
@@ -423,6 +442,7 @@ async def chat_stream(task_id: str, req: Request, current_user: dict = Depends(g
         raise HTTPException(status_code=404, detail="Task not found")
 
     async def stream():
+        after = 0
         while not await req.is_disconnected():
             await recover_stale(pool)
             row = await read_task()
@@ -430,6 +450,16 @@ async def chat_stream(task_id: str, req: Request, current_user: dict = Depends(g
                 yield f"data: {json.dumps({'error': 'Task no longer exists', 'done': True})}\n\n"
                 break
             status, output, error = row
+            events = await read_events(pool, task_id, after)
+            for event in events:
+                after = event['sequence']
+                yield f"data: {json.dumps({'event': event})}\n\n"
+            if status == 'waiting_approval':
+                async with pool.connection() as conn:
+                    cursor = await conn.execute('SELECT pending_approvals FROM task_runs WHERE task_id = %s', (task_id,))
+                    pending = await cursor.fetchone()
+                yield f"data: {json.dumps({'approvals': pending[0] if pending else [], 'done': True})}\n\n"
+                break
             if status in ("done", "error"):
                 event = {"content": output, "done": True} if status == "done" else {"error": error, "done": True}
                 yield f"data: {json.dumps(event)}\n\n"
@@ -513,7 +543,7 @@ async def delete_conversation(thread_id: str, req: Request, current_user: dict =
         async with conn.transaction():
             await require_conversation(conn, thread_id, current_user["id"], lock=True)
             cursor = await conn.execute(
-                "SELECT 1 FROM task_runs WHERE thread_id = %s AND status IN ('queued', 'running')", (thread_id,),
+                "SELECT 1 FROM task_runs WHERE thread_id = %s AND status IN ('queued', 'running', 'waiting_approval')", (thread_id,),
             )
             if await cursor.fetchone():
                 raise HTTPException(status_code=409, detail="Wait for the active generation before deleting this conversation")

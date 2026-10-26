@@ -5,7 +5,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 queries = {}
-for filename in ("db/db.py", "db/history.py", "tasks.py", "llm/context.py"):
+for filename in ("db/db.py", "db/history.py", "tasks.py", "llm/context.py", "orchestration.py"):
     tree = ast.parse((root / "src" / filename).read_text(encoding="utf-8-sig"))
     for function in tree.body:
         if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):

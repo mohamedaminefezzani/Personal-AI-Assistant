@@ -17,6 +17,40 @@ function app() {
     return dom;
 }
 
+test('stream ending without a terminal event reports an interrupted connection', async () => {
+    const dom = app();
+    await new Promise(setImmediate);
+    dom.window.TextDecoder = TextDecoder;
+    dom.window.fetch = async () => ({status: 200, ok: true, json: async () => []});
+    await dom.window.selectConversation('test-thread', 'Test');
+    dom.window.fetch = async () => ({status: 200, ok: true,
+        body: {getReader: () => ({read: async () => ({done: true})})}});
+    const typing = dom.window.document.createElement('div');
+    const answer = dom.window.document.createElement('div');
+    await assert.rejects(dom.window.consumeStream('job', 'test-thread', typing, answer),
+                         /Connection closed before the result/);
+    dom.window.close();
+});
+
+test('terminal server error is displayed instead of an empty response', async () => {
+    const dom = app();
+    await new Promise(setImmediate);
+    dom.window.TextDecoder = TextDecoder;
+    dom.window.fetch = async () => ({status: 200, ok: true, json: async () => []});
+    await dom.window.selectConversation('test-thread', 'Test');
+    let sent = false;
+    dom.window.fetch = async () => ({status: 200, ok: true, body: {getReader: () => ({read: async () => {
+        if (sent) return {done: true};
+        sent = true;
+        return {done: false, value: Buffer.from('data: {"error":"Conversation summary storage failed","done":true}\n\n')};
+    }})}});
+    const typing = dom.window.document.createElement('div');
+    const answer = dom.window.document.createElement('div');
+    await dom.window.consumeStream('job', 'test-thread', typing, answer);
+    assert.match(answer.textContent, /summary storage failed/);
+    dom.window.close();
+});
+
 test('raw model HTML cannot create scripts, event handlers or javascript links', () => {
     const dom = app();
     const output = dom.window.renderMarkdown(
@@ -81,5 +115,42 @@ test('switching chats clears stale busy state and reconnects queued jobs with em
     queued = true;
     await dom.window.selectConversation('queued', 'Queued');
     assert.equal(reconnected, 'saved-job');
+    dom.window.close();
+});
+
+test('reloaded pending approval shows exact proposal and posts an explicit decision', async () => {
+    const dom = app();
+    await new Promise(setImmediate);
+    dom.window.TextDecoder = TextDecoder;
+    let decision = null;
+    dom.window.fetch = async (url, options) => {
+        if (url.includes('/chat/approval/')) {
+            decision = JSON.parse(options.body);
+            return {ok: true, status: 200, json: async () => ({status: 'queued'})};
+        }
+        if (url.includes('/chat/stream/')) {
+            let sent = false;
+            const event = decision ? {content: 'Completed', done: true} : {
+                approvals: [{approval_id: 'proposal', tool: 'write_file_tool',
+                args: {filename: 'test.html'}, diff: '+<img src=x onerror=alert(1)>'}], done: true};
+            return {ok: true, status: 200, body: {getReader: () => ({read: async () => {
+                if (sent) return {done: true};
+                sent = true;
+                return {done: false, value: Buffer.from('data: ' + JSON.stringify(event) + '\n\n')};
+            }})}};
+        }
+        return {ok: true, status: 200, json: async () => url.includes('/chat/status/')
+            ? {status: decision ? 'done' : 'waiting_approval', task_id: 'job'} : []};
+    };
+    await dom.window.selectConversation('thread', 'Thread');
+    const card = dom.window.document.querySelector('.approval-card');
+    assert.ok(card);
+    assert.equal(card.querySelector('img'), null);
+    assert.match(card.querySelector('pre').textContent, /<img/);
+    assert.equal(dom.window.document.getElementById('sendButton').disabled, true);
+    card.querySelector('button').click();
+    await new Promise(setImmediate);
+    assert.deepEqual(decision, {approval_id: 'proposal', decision: 'approve'});
+    assert.equal(dom.window.document.getElementById('sendButton').disabled, false);
     dom.window.close();
 });

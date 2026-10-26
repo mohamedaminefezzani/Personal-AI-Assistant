@@ -8,13 +8,50 @@ An ongoing personal project to build a local multi-agent AI assistant. Runs enti
 
 | Agent | Model | Trigger | Tools |
 |---|---|---|---|
-| **main_agent** | Ministral 3 14b | Default for all text messages | Web search, read/write files, run code |
-| **coding_agent** | Qwen 3.5 4b | 💻 button in the UI | Read/write files, run code (write → run → fix loop) |
+| **main_agent** | Qwen 3.5 9b | Default for all text messages | Web search, read/write files, delegate coding |
+| **coding_agent** | Qwen 3.5 4b | Delegation from main, or coding button | Read/write files, run code with approval |
 | **video_agent** | Ministral 3 3b | Video file upload | None (vision only) |
 
 ---
 
 ## Features
+
+### Orchestration and approval
+
+The main agent can call `delegate_to_coding(objective, acceptance_criteria)` without
+the user selecting coding mode. The coding specialist runs as a nested checkpointed
+agent, returns a report, and the main agent produces the final answer. Specialist
+delegations run sequentially; at most three are accepted per user turn. The manual
+coding button remains available as a shortcut.
+
+Read/search actions run automatically. Before `write_file_tool` or `run_code_tool`,
+the backend calls LangGraph `interrupt()` and checkpoints the pending action.
+The UI shows the file diff or exact code/language/options, with Approve and Reject.
+Both the main and coding agents use this gate. File writes are checked against the
+file version shown for approval; if it changed, the old approval cannot overwrite it.
+Code still runs on the host, outside a sandbox, after explicit approval. File access
+remains inside the authenticated user's assistant files directory.
+
+Jobs transition `queued -> running -> waiting_approval -> queued -> running -> done`
+(or error). Waiting releases the worker and holds no model HTTP request. Each resumed
+execution segment receives the configured task deadline; waiting time is excluded.
+Only the owning user can decide via `POST /chat/approval/{task_id}` with
+`{"approval_id":"...","decision":"approve"}` or `reject`. Duplicate/stale decisions
+return 409. Pending jobs block another generation or deletion in that conversation.
+
+SSE replays persisted `task_events` in sequence, then follows new actions. The UI
+shows delegation, tool start/completion and rejection; it does not show private
+model reasoning. Reloading restores pending approvals and the latest task's steps.
+Postgres checkpoints preserve the point of interruption. Queued and waiting jobs
+survive restart; interrupted running side effects are not automatically replayed.
+Restart all server processes together when upgrading so old workers cannot claim
+new approval-resume payloads. Migrations run automatically at startup.
+
+Try: "Create hello.py that prints Bonjour, save it, then verify it." Without
+selecting coding mode, the main agent should delegate, then an approval card should
+appear before the write. After approval, a second card should precede code execution,
+followed by the specialist report and the main agent's answer. Actual delegation
+choices and code quality depend on the local models.
 
 - 🔍 **Web search** via Tavily
 - 📁 **File read/write** — the assistant can save and read files in `~/assistant_files/`
@@ -54,11 +91,52 @@ Root
 
 ## Requirements
 
+### Local inference on a 4 GB GPU / 16 GB RAM
+
+The default main model is `qwen3.5:9b`, the summary model is `ministral-3:3b`, and
+coding uses `qwen3.5:4b`. On a 4 GB GPU the 9b model can require CPU/RAM offloading
+and run slowly. Model size alone does not guarantee
+that the model and its KV cache fit entirely on the GPU.
+
+Settings are documented in `src/.env.example`. Put overrides in `src/.env` or in
+the server environment, then restart the server and its workers. Existing environment
+values take precedence: replace an old `TASK_TIMEOUT_SECONDS=300` if present.
+
+- `TASK_TIMEOUT_SECONDS=900`: total generation deadline, including all model calls,
+  tools and conversation summarisation. Increasing it allows more time; it does not
+  accelerate inference.
+- `OLLAMA_HTTP_TIMEOUT_SECONDS=900`: Ollama HTTP timeout, defaulting to the task
+  deadline when unset. The outer task deadline still limits the combined operation.
+- `OLLAMA_NUM_CTX=8192`, `OLLAMA_NUM_PREDICT=1024`: text context and output limits.
+  History budgeting reserves output space and overhead before each model call.
+- `OLLAMA_VIDEO_NUM_CTX=32768`: separate context for image-heavy video input;
+  video can require substantially more RAM and time than text.
+- `OLLAMA_NUM_THREAD=6`, `OLLAMA_KEEP_ALIVE=5m`: CPU threads and model residency.
+  Keeping a model loaded can reduce subsequent loading time.
+- `SEARCH_MAX_RESULTS=3`, `SEARCH_RESULT_CHARS=1200`: reduce web content sent back
+  to the model while retaining titles and source URLs. These limits trade detail
+  for shorter prompts.
+
+Code execution retains its separate subprocess timeout (at most 60 seconds).
+Summarisation has its own configurable limits: `SUMMARY_NUM_PREDICT=512`,
+`SUMMARY_TIMEOUT_SECONDS=240`, and `SUMMARY_SAVE_TIMEOUT_SECONDS=20`.
+The prompt requests at most 200 words. A failure reports whether generation or
+storage failed, and logs the traceback with the conversation ID. Failed summary
+storage does not advance the history pruning boundary. All these operations still
+count toward the overall task deadline. The database pool checks connections before
+reuse, including after long model calls. If the browser stream closes before its
+terminal event, the interface reports an interruption; reopen the conversation to
+check the task rather than assuming it stopped on the server.
+The UI currently waits for the complete durable response; it does not stream model
+tokens. A long inference can therefore appear idle even while Ollama is working.
+
+### Dependencies
+
 - Python 3.12
 - Postgres (e.g. [Neon](https://neon.tech) serverless, or local)
 - Ollama running locally with these models pulled:
   - `ollama pull ministral-3:3b`
-  - `ollama pull ministral-3:14b`
+  - `ollama pull qwen3.5:9b`
   - `ollama pull qwen3.5:4b`
 - Tavily API key
 - Langfuse account (public + secret key)
@@ -141,11 +219,11 @@ Memory is automatically injected into every prompt so the assistant always knows
   one worker, and a partial unique index prevents overlapping generations in the
   same conversation. Duplicate submissions return HTTP 409.
 - Workers claim jobs atomically with `FOR UPDATE SKIP LOCKED`, renew a 60-second
-  lease every 10 seconds, and enforce `TASK_TIMEOUT_SECONDS` (default 300).
+  lease every 10 seconds, and enforce `TASK_TIMEOUT_SECONDS` (default 900).
   Queued jobs survive a restart. Interrupted running jobs are marked as errors
   after the lease expires, rather than automatically repeating tool side effects.
 - SSE reads persisted job state, so reconnects can reach another application
-  process. Deletion is refused while a job is queued or running; completed
+  process. Deletion is refused while a job is queued, running or waiting for approval; completed
   conversation deletion also removes its archive, tasks, summaries and checkpoints.
 
 ### Existing installations
